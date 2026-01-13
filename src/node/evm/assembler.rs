@@ -8,7 +8,9 @@ use crate::{
         primitives::{BscBlock, BscBlockBody},
     }
 };
-use alloy_consensus::{BlockBody, Header, EMPTY_OMMER_ROOT_HASH, proofs, Transaction, BlockHeader};
+use alloy_consensus::{
+    proofs, BlockBody, BlockHeader, Header, Transaction, TxReceipt, EMPTY_OMMER_ROOT_HASH,
+};
 use alloy_primitives::{keccak256, B256};
 use alloy_eips::{eip7840::BlobParams, merge::BEACON_NONCE};
 use alloy_primitives::Bytes;
@@ -100,9 +102,15 @@ where
         let eth_ctx = ctx.as_eth_context();
         let timestamp = evm_env.block_env.timestamp().saturating_to();
         let transactions_root = proofs::calculate_transaction_root(&transactions);
-        let receipts_root = Receipt::calculate_receipt_root_no_memo(receipts);
-        let logs_bloom = logs_bloom(receipts.iter().flat_map(|r| &r.logs));
         let block_number = evm_env.block_env.number().saturating_to();
+
+        let receipts_with_bloom = receipts.iter().map(TxReceipt::with_bloom_ref).collect::<Vec<_>>();
+        let receipts_root = alloy_consensus::proofs::calculate_receipt_root(&receipts_with_bloom);
+    
+        // Calculate header logs bloom.
+        let logs_bloom = receipts_with_bloom
+            .iter()
+            .fold(alloy_primitives::Bloom::ZERO, |bloom, r| bloom | r.bloom_ref());
 
         // parlia override header un-used fields.
         let mut withdrawals_root = None;
