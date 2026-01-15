@@ -187,7 +187,7 @@ where
                     if let Some(sp) = crate::shared::get_snapshot_provider() {
                         let sp = Arc::clone(sp);
                         let spec = self.consensus.spec.clone();
-                        match self.provider.header(&tip_header.hash()) {
+                        match self.provider.header(tip_header.hash()) {
                             Ok(Some(h)) => {
                                 tracing::debug!(target: "bsc::vote", "Succeed to get header for tip block, validator: {}, tip: {}", self.validator_address, tip_header.number());
                                 tokio::spawn(async move {

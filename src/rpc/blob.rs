@@ -2,12 +2,12 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObject;
 use alloy_primitives::B256;
+use alloy_consensus::transaction::TxHashRef;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use reth_transaction_pool::{BlobStoreError, TransactionPool};
 use alloy_eips::eip7594::BlobTransactionSidecarVariant;
 use reth_provider::{BlockNumReader, TransactionsProvider};
-use reth_primitives_traits::SignedTransaction;
 
 /// Inner blob sidecar data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -408,4 +408,3 @@ mod tests {
         assert!(json.contains("txIndex"));
     }
 }
-

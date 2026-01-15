@@ -18,7 +18,7 @@ use reth::{
 use reth_evm::ConfigureEvm;
 use reth_payload_builder_primitives::Events;
 use reth_payload_primitives::BuiltPayload;
-use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates, ExecutedTrieUpdates};
+use reth_chain_state::ExecutedBlock;
 use reth_primitives::{SealedBlock, TransactionSigned};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,8 +38,6 @@ pub struct BscBuiltPayload {
     pub(crate) requests: Option<Requests>,
     /// The executed block
     pub(crate) executed_block: ExecutedBlock<BscPrimitives>,
-    /// The executed trie updates
-    pub(crate) executed_trie: Option<ExecutedTrieUpdates>,
 }
 
 impl BuiltPayload for BscBuiltPayload {
@@ -57,11 +55,8 @@ impl BuiltPayload for BscBuiltPayload {
         self.requests.clone()
     }
 
-    fn executed_block(&self) -> Option<ExecutedBlockWithTrieUpdates<Self::Primitives>> {
-        self.executed_trie.clone().map(|trie| ExecutedBlockWithTrieUpdates {
-            block: self.executed_block.clone(),
-            trie,
-        })
+    fn executed_block(&self) -> Option<ExecutedBlock<Self::Primitives>> {
+        Some(self.executed_block.clone())
     }
 }
 

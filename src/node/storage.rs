@@ -4,7 +4,7 @@ use reth_db::transaction::{DbTx, DbTxMut};
 use reth_provider::{
     providers::{ChainStorage, NodeTypesForProvider},
     BlockBodyReader, BlockBodyWriter, ChainSpecProvider, ChainStorageReader, ChainStorageWriter,
-    DBProvider, DatabaseProvider, EthStorage, ProviderResult, ReadBodyInput, StorageLocation,
+    DBProvider, DatabaseProvider, EthStorage, ProviderResult, ReadBodyInput,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -19,7 +19,6 @@ where
         &self,
         provider: &Provider,
         bodies: Vec<(u64, Option<BscBlockBody>)>,
-        write_to: StorageLocation,
     ) -> ProviderResult<()> {
         let (eth_bodies, _sidecars) = bodies
             .into_iter()
@@ -31,7 +30,7 @@ where
                 }
             })
             .unzip::<_, _, Vec<_>, Vec<_>>();
-        self.0.write_block_bodies(provider, eth_bodies, write_to)?;
+        self.0.write_block_bodies(provider, eth_bodies)?;
 
         // TODO: Write sidecars
 
@@ -42,9 +41,8 @@ where
         &self,
         provider: &Provider,
         block: u64,
-        remove_from: StorageLocation,
     ) -> ProviderResult<()> {
-        self.0.remove_block_bodies_above(provider, block, remove_from)?;
+        self.0.remove_block_bodies_above(provider, block)?;
 
         // TODO: Remove sidecars
 

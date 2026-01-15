@@ -47,6 +47,7 @@ where
     type Error = EVMError<DB::Error>;
     type HaltReason = HaltReason;
     type Spec = BscHardfork;
+    type BlockEnv = BlockEnv;
     type Precompiles = PrecompilesMap;
     type Inspector = I;
 
@@ -79,9 +80,8 @@ where
             // Only runs when trace=true (CacheDB detected or explicit inspector used)
             if tx.is_system_transaction {
                 let beneficiary = self.block.beneficiary;
-                if let Ok(account) = self.journal_mut().load_account(beneficiary) {
-                    account.data.info.balance = tx.base.value;
-                    account.data.mark_touch();
+                if let Ok(mut account) = self.journal_mut().load_account_mut(beneficiary) {
+                    account.set_balance(tx.base.value);
                 }
             }
         }
@@ -121,7 +121,7 @@ where
         Ok(ResultAndState::new(result, state))
     }
 
-    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec>) {
+    fn finish(self) -> (Self::DB, EvmEnv<Self::Spec, Self::BlockEnv>) {
         let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })

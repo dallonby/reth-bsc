@@ -628,8 +628,8 @@ mod tests {
     impl HeaderProvider for MockProvider {
         type Header = Header;
 
-        fn header(&self, block_hash: &B256) -> Result<Option<Self::Header>, ProviderError> {
-            Ok(self.headers_by_hash.get(block_hash).cloned())
+        fn header(&self, block_hash: B256) -> Result<Option<Self::Header>, ProviderError> {
+            Ok(self.headers_by_hash.get(&block_hash).cloned())
         }
 
         fn header_by_number(&self, num: u64) -> Result<Option<Self::Header>, ProviderError> {

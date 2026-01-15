@@ -7,6 +7,7 @@ use reth_primitives::TransactionSigned;
 use reth_revm::State;
 use revm::{
     context::{BlockEnv, TxEnv},
+    context_interface::block::Block,
     primitives::{Address, Bytes, TxKind, U256},
 };
 use alloy_consensus::{TxReceipt, Header, BlockHeader};
@@ -48,6 +49,7 @@ where
         Tx: FromRecoveredTx<R::Transaction>
                 + FromRecoveredTx<TransactionSigned>
                 + FromTxWithEncoded<TransactionSigned>,
+        BlockEnv = BlockEnv,
     >,
     Spec: EthereumHardforks + crate::hardforks::BscHardforks + EthChainSpec + Hardforks + Clone + 'static,
     R: ReceiptBuilder<Transaction = TransactionSigned, Receipt: TxReceipt>,
@@ -62,7 +64,7 @@ where
         &mut self, 
         block: &BlockEnv
     ) -> Result<(), BlockExecutionError> {
-        let block_number = block.number.to::<u64>();
+        let block_number = block.number().to::<u64>();
         tracing::trace!("Check new block, block_number: {}", block_number);
 
         self.inner_ctx.header = self.ctx.header.clone();
@@ -167,7 +169,7 @@ where
             let mut cache = VALIDATOR_CACHE.lock().unwrap();
             if let Some(cached_result) = cache.get(&block_hash) {
                 tracing::debug!("Succeed to query cached validator result, block_number: {}, block_hash: {}, evm_block_number: {}", 
-                block_number, block_hash, self.evm.block().number);
+                block_number, block_hash, self.evm.block().number());
                 return Ok(cached_result.clone());
             }
         }
@@ -178,7 +180,7 @@ where
             let mut cache = VALIDATOR_CACHE.lock().unwrap();
             cache.insert(block_hash, result.clone());
             tracing::debug!("Succeed to update cache, block_number: {}, block_hash: {}, evm_block_number: {}", 
-                block_number, block_hash, self.evm.block().number);
+                block_number, block_hash, self.evm.block().number());
         }
 
         Ok(result)
@@ -195,7 +197,7 @@ where
                 caller: Address::default(),
                 kind: TxKind::Call(to),
                 nonce: 0,
-                gas_limit: self.evm.block().gas_limit,
+                gas_limit: self.evm.block().gas_limit(),
                 value: U256::ZERO,
                 data: data.clone(),
                 gas_price: 0,
@@ -538,8 +540,8 @@ where
             .ok_or(BlockExecutionError::msg("Failed to get snapshot from snapshot provider"))?;
         self.inner_ctx.snap = Some(snap.clone());
 
-        let header_number = block.number.to::<u64>();
-        let header_timestamp = block.timestamp.to::<u64>();
+        let header_number = block.number().to::<u64>();
+        let header_timestamp = block.timestamp().to::<u64>();
         if self.spec.is_feynman_active_at_timestamp(header_number, header_timestamp) &&
             !self.spec.is_feynman_transition_at_timestamp(header_number, header_timestamp, parent_header.timestamp) &&
             is_breathe_block(parent_header.timestamp, header_timestamp)

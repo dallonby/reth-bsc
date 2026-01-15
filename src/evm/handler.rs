@@ -87,10 +87,10 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
 
             // warm authority account and check nonce.
             // 4. Add `authority` to `accessed_addresses` (as defined in [EIP-2929](./eip-2929.md).)
-            let mut authority_acc = journal.load_account_code(authority)?;
+            let mut authority_acc = journal.load_account_with_code_mut(authority)?;
 
             // 5. Verify the code of `authority` is either empty or already delegated.
-            if let Some(bytecode) = &authority_acc.info.code {
+            if let Some(bytecode) = authority_acc.code() {
                 // if it is not empty and it is not eip7702
                 if !bytecode.is_empty() && !bytecode.is_eip7702() {
                     continue;
@@ -99,14 +99,13 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
 
             // 6. Verify the nonce of `authority` is equal to `nonce`. In case `authority` does not
             //    exist in the trie, verify that `nonce` is equal to `0`.
-            if authorization.nonce() != authority_acc.info.nonce {
+            if authorization.nonce() != authority_acc.nonce() {
                 continue;
             }
 
             // 7. Add `PER_EMPTY_ACCOUNT_COST - PER_AUTH_BASE_COST` gas to the global refund counter
             //    if `authority` exists in the trie.
-            if !(authority_acc.is_empty() && authority_acc.is_loaded_as_not_existing_not_touched())
-            {
+            if !(authority_acc.is_empty() && authority_acc.is_loaded_as_not_existing_not_touched()) {
                 refunded_accounts += 1;
             }
 
@@ -124,12 +123,9 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
                 let hash = bytecode.hash_slow();
                 (bytecode, hash)
             };
-            authority_acc.info.code_hash = hash;
-            authority_acc.info.code = Some(bytecode);
-
+            authority_acc.set_code(hash, bytecode);
             // 9. Increase the nonce of `authority` by one.
-            authority_acc.info.nonce = authority_acc.info.nonce.saturating_add(1);
-            authority_acc.mark_touch();
+            authority_acc.bump_nonce();
         }
 
         let refunded_gas =
@@ -175,9 +171,8 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
             tx_fee = tx_fee.saturating_add(data_fee);
         }
 
-        let system_account = ctx.journal_mut().load_account(SYSTEM_ADDRESS)?;
-        system_account.data.mark_touch();
-        system_account.data.info.balance = system_account.data.info.balance.saturating_add(tx_fee);
+        let mut system_account = ctx.journal_mut().load_account_mut(SYSTEM_ADDRESS)?;
+        let _ = system_account.incr_balance(tx_fee);
         Ok(())
     }
 

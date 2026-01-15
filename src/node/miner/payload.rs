@@ -18,7 +18,7 @@ use reth::transaction_pool::error::InvalidPoolTransactionError;
 use reth::transaction_pool::BestTransactionsAttributes;
 use reth::transaction_pool::{PoolTransaction, TransactionPool};
 use reth_basic_payload_builder::PayloadConfig;
-use reth_chain_state::{ExecutedBlock, ExecutedTrieUpdates};
+use reth_chain_state::ExecutedBlock;
 use reth_chainspec::EthChainSpec;
 use reth_chainspec::EthereumHardforks;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
@@ -37,6 +37,7 @@ use reth_provider::StateProviderFactory;
 use reth_revm::cached::CachedReads;
 use reth_revm::cancelled::ManualCancel;
 use reth_revm::{database::StateProviderDatabase, db::State};
+use revm::context_interface::block::Block;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -211,9 +212,9 @@ where
             attributes.timestamp,
         );
         let block_gas_limit: u64 =
-            builder.evm_mut().block().gas_limit.saturating_sub(system_txs_gas);
+            builder.evm_mut().block().gas_limit().saturating_sub(system_txs_gas);
 
-        let base_fee = builder.evm_mut().block().basefee;
+        let base_fee = builder.evm_mut().block().basefee();
         trace!("build_payload: base_fee={}", base_fee);
 
         let mut sidecars_map = HashMap::new();
@@ -582,8 +583,8 @@ where
                     vec![execution_result.requests.clone()],
                 )),
                 hashed_state: Arc::new(hashed_state),
+                trie_updates: Arc::new(trie_updates),
             },
-            executed_trie: Some(ExecutedTrieUpdates::Present(Arc::new(trie_updates))),
         };
         Ok(payload)
     }
@@ -678,8 +679,8 @@ where
                     vec![execution_result.requests.clone()],
                 )),
                 hashed_state: Arc::new(hashed_state),
+                trie_updates: Arc::new(trie_updates),
             },
-            executed_trie: Some(ExecutedTrieUpdates::Present(Arc::new(trie_updates))),
         };
         Ok(payload)
     }

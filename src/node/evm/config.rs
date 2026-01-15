@@ -155,7 +155,10 @@ impl<R, Spec, EvmF> BlockExecutorFactory for BscBlockExecutorFactory<R, Spec, Ev
 where
     R: ReceiptBuilder<Transaction = TransactionSigned, Receipt: TxReceipt<Log = Log>> + Clone,
     Spec: EthereumHardforks + BscHardforks + EthChainSpec + Hardforks + Clone,
-    EvmF: EvmFactory<Tx: FromRecoveredTx<TransactionSigned> + FromTxWithEncoded<TransactionSigned>>,
+    EvmF: EvmFactory<
+        Tx: FromRecoveredTx<TransactionSigned> + FromTxWithEncoded<TransactionSigned>,
+        BlockEnv = BlockEnv,
+    >,
     R::Transaction: From<TransactionSigned> + Clone,
     Self: 'static,
     BscTxEnv: IntoTxEnv<<EvmF as EvmFactory>::Tx>,
@@ -210,7 +213,7 @@ where
         &self.block_assembler
     }
 
-    fn evm_env(&self, header: &Header) -> EvmEnv<BscHardfork> {
+    fn evm_env(&self, header: &Header) -> Result<EvmEnv<BscHardfork>, Self::Error> {
         let mut blob_params = None;
         if BscHardforks::is_cancun_active_at_timestamp(self.chain_spec(), header.number, header.timestamp) {
             blob_params = self.chain_spec().blob_params_at_timestamp(header.timestamp);
@@ -256,7 +259,7 @@ where
             blob_excess_gas_and_price,
         };
 
-        EvmEnv { cfg_env, block_env }
+        Ok(EvmEnv { cfg_env, block_env })
     }
 
     fn next_evm_env(
@@ -333,8 +336,8 @@ where
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
-    ) -> ExecutionCtxFor<'a, Self> {
-        BscBlockExecutionCtx {
+    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
+        Ok(BscBlockExecutionCtx {
             base: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash,
                 parent_beacon_block_root: block.header().parent_beacon_block_root,
@@ -343,16 +346,16 @@ where
             },
             header: Some(block.header().clone()),
             is_miner: false,
-        }
+        })
     }
 
     fn context_for_next_block(
         &self,
         parent: &SealedHeader<HeaderTy<Self::Primitives>>,
         attributes: Self::NextBlockEnvCtx,
-    ) -> ExecutionCtxFor<'_, Self> {
+    ) -> Result<ExecutionCtxFor<'_, Self>, Self::Error> {
         tracing::trace!("Try to create next block ctx for miner, next_block_numer={}, parent_hash={}", parent.number+1, parent.hash());
-        BscBlockExecutionCtx {
+        Ok(BscBlockExecutionCtx {
             base: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
@@ -361,7 +364,7 @@ where
             },
             header: None, // No header available for next block context
             is_miner: true,
-        }
+        })
     }
 
     // payload builder use this method to create BscBlockBuilder.
@@ -403,13 +406,16 @@ impl ConfigureEngineEvm<BscExecutionData> for BscEvmConfig
 where
     Self: Send + Sync + Unpin + Clone + 'static,
 {
-    fn evm_env_for_payload(&self, payload: &BscExecutionData) -> EvmEnv<BscHardfork> {
+    fn evm_env_for_payload(&self, payload: &BscExecutionData) -> Result<EvmEnv<BscHardfork>, Self::Error> {
         self.evm_env(&payload.0.header)
     }
 
-    fn context_for_payload<'a>(&self, payload: &'a BscExecutionData) -> BscBlockExecutionCtx<'a> {
+    fn context_for_payload<'a>(
+        &self,
+        payload: &'a BscExecutionData,
+    ) -> Result<BscBlockExecutionCtx<'a>, Self::Error> {
         let block = &payload.0;
-        BscBlockExecutionCtx {
+        Ok(BscBlockExecutionCtx {
             base: EthBlockExecutionCtx {
                 parent_hash: block.header.parent_hash(),
                 parent_beacon_block_root: block.header.parent_beacon_block_root,
@@ -418,14 +424,14 @@ where
             },
             header: Some(block.header.clone()),
             is_miner: false,
-        }
+        })
     }
 
     fn tx_iterator_for_payload(
         &self,
         payload: &BscExecutionData,
-    ) -> impl ExecutableTxIterator<Self> {
-        payload.0.body.inner.transactions.clone().into_iter().map(|tx| tx.try_into_recovered())
+    ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
+        Ok(payload.0.body.inner.transactions.clone().into_iter().map(|tx| tx.try_into_recovered()))
     }
 }
 

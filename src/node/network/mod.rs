@@ -261,7 +261,7 @@ impl BscNetworkBuilder {
                     hash: &alloy_primitives::B256,
                 ) -> Option<crate::node::primitives::BscBlock> {
                     crate::shared::get_cached_block_by_hash(hash).or_else(|| {
-                        self.inner.header(hash).ok().flatten().map(|h| {
+                        self.inner.header(*hash).ok().flatten().map(|h| {
                             crate::node::primitives::BscBlock {
                                 header: h,
                                 body: crate::node::primitives::BscBlockBody {

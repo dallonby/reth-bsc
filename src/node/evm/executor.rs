@@ -25,6 +25,7 @@ use revm::{
         result::{ExecutionResult, ResultAndState},
 
     },
+    context_interface::block::Block,
     state::Bytecode,
     DatabaseCommit,
 };
@@ -97,6 +98,7 @@ where
         Tx: FromRecoveredTx<R::Transaction>
                 + FromRecoveredTx<TransactionSigned>
                 + FromTxWithEncoded<TransactionSigned>,
+        BlockEnv = revm::context::BlockEnv,
     >,
     Spec: EthereumHardforks + BscHardforks + EthChainSpec + Hardforks + Clone + 'static,
     R: ReceiptBuilder<Transaction = TransactionSigned, Receipt: TxReceipt>,
@@ -121,7 +123,7 @@ where
         if let Some(ref header) = ctx.header {
             crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().insert_header_to_cache(header.clone());
         } else if !ctx.is_miner { // miner has no current header.
-            warn!("No header found in the context, block_number: {:?}", evm.block().number.to::<u64>());
+            warn!("No header found in the context, block_number: {:?}", evm.block().number().to::<u64>());
         }
 
         let parlia = Arc::new(Parlia::new(Arc::new(spec.clone()), 200));
@@ -328,6 +330,7 @@ where
         Tx: FromRecoveredTx<R::Transaction>
                 + FromRecoveredTx<TransactionSigned>
                 + FromTxWithEncoded<TransactionSigned>,
+        BlockEnv = revm::context::BlockEnv,
     >,
     Spec: EthereumHardforks + BscHardforks + EthChainSpec + Hardforks + 'static,
     R: ReceiptBuilder<Transaction = TransactionSigned, Receipt: TxReceipt>,
@@ -344,13 +347,13 @@ where
         let block_env = self.evm.block().clone();
         trace!(
             target: "bsc::executor", 
-            block_id = %block_env.number,
+            block_id = %block_env.number(),
             is_miner = self.ctx.is_miner,
             "Start to apply_pre_execution_changes"
         );
         
         // Update current block height and header height metrics
-        let block_number = block_env.number.to::<u64>();
+        let block_number = block_env.number().to::<u64>();
         self.consensus_metrics.current_block_height.set(block_number as f64);
         
         // pre check and prepare some intermediate data for commit parlia snapshot in finish function.
@@ -361,25 +364,25 @@ where
         }
         
         // set state clear flag if the block is after the Spurious Dragon hardfork.
-        let block_number = self.evm.block().number.to();
+        let block_number = self.evm.block().number().to::<u64>();
         let state_clear_flag = self.spec.is_spurious_dragon_active_at_block(block_number);
         self.evm.db_mut().set_state_clear_flag(state_clear_flag);
         let parent_timestamp = self.inner_ctx.parent_header.as_ref().unwrap().timestamp;
         self.try_update_build_in_system_contract(
-            self.evm.block().number.to::<u64>(), 
-            self.evm.block().timestamp.to::<u64>(), 
+            self.evm.block().number().to::<u64>(), 
+            self.evm.block().timestamp().to::<u64>(), 
             parent_timestamp, 
             true
         )?;
      
         // Apply historical block hashes if Prague is active
         if self.spec.is_prague_active_at_block_and_timestamp(
-            self.evm.block().number.to::<u64>(), 
-            self.evm.block().timestamp.to::<u64>()
+            self.evm.block().number().to::<u64>(), 
+            self.evm.block().timestamp().to::<u64>()
         ) {
             trace!(
                 target: "bsc::executor::prague",
-                block_number = self.evm.block().number.to::<u64>(),
+                block_number = self.evm.block().number().to::<u64>(),
                 parent_hash = ?self.ctx.base.parent_hash,
                 "Calling apply_blockhashes_contract_call (Prague active)"
             );
@@ -390,6 +393,53 @@ where
         Ok(())
     }
 
+    fn execute_transaction_without_commit(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+    ) -> Result<ResultAndState<<Self::Evm as Evm>::HaltReason>, BlockExecutionError> {
+        let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
+        if tx.tx().gas_limit() > block_available_gas {
+            return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                transaction_gas_limit: tx.tx().gas_limit(),
+                block_available_gas,
+            }
+            .into());
+        }
+
+        let tx_hash = tx.tx().trie_hash();
+        self.evm
+            .transact(&tx)
+            .map_err(|err| BlockExecutionError::evm(err, tx_hash))
+    }
+
+    fn commit_transaction(
+        &mut self,
+        output: ResultAndState<<Self::Evm as Evm>::HaltReason>,
+        tx: impl ExecutableTx<Self>,
+    ) -> Result<u64, BlockExecutionError> {
+        let ResultAndState { result, state } = output;
+
+        let mut temp_state = state.clone();
+        temp_state.remove(&SYSTEM_ADDRESS);
+        self.system_caller
+            .on_state(StateChangeSource::Transaction(self.receipts.len()), &temp_state);
+
+        let gas_used = result.gas_used();
+        self.gas_used += gas_used;
+
+        self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
+            tx: tx.tx(),
+            evm: &self.evm,
+            result,
+            state: &state,
+            cumulative_gas_used: self.gas_used,
+        }));
+
+        self.evm.db_mut().commit(state);
+
+        Ok(gas_used)
+    }
+
     fn execute_transaction_with_commit_condition(
         &mut self,
         tx: impl ExecutableTx<Self>,
@@ -397,7 +447,7 @@ where
     ) -> Result<Option<u64>, BlockExecutionError> {
         // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
         // must be no greater than the block's gasLimit.
-        let block_available_gas = self.evm.block().gas_limit - self.gas_used;
+        let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
 
         if tx.tx().gas_limit() > block_available_gas {
             return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
@@ -450,7 +500,7 @@ where
         f: impl for<'b> FnOnce(&'b ExecutionResult<<E as alloy_evm::Evm>::HaltReason>),
     ) -> Result<u64, BlockExecutionError> {
         let signer = tx.signer();
-        let is_system = is_system_transaction(tx.tx(), *signer, self.evm.block().beneficiary);
+        let is_system = is_system_transaction(tx.tx(), *signer, self.evm.block().beneficiary());
         if is_system {
             self.system_txs.push(tx.tx().clone());
             return Ok(0);
@@ -458,7 +508,7 @@ where
 
         self.hertz_patch_manager.patch_before_tx(tx.tx(), self.evm.db_mut())?;
 
-        let block_available_gas = self.evm.block().gas_limit - self.gas_used;
+        let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
         if tx.tx().gas_limit() > block_available_gas {
             return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
                 transaction_gas_limit: tx.tx().gas_limit(),
@@ -501,40 +551,40 @@ where
         let block_env = self.evm.block().clone();
         debug!(
             target: "bsc::executor", 
-            block_id = %block_env.number,
+            block_id = %block_env.number(),
             is_miner = self.ctx.is_miner,
             "Start to finish"
         );
 
         let parent_timestamp = self.inner_ctx.parent_header.as_ref().unwrap().timestamp;
         self.try_update_build_in_system_contract(
-            self.evm.block().number.to::<u64>(), 
-            self.evm.block().timestamp.to::<u64>(), 
+            self.evm.block().number().to::<u64>(), 
+            self.evm.block().timestamp().to::<u64>(), 
             parent_timestamp, 
             false
         )?;
 
         // Initialize Feynman contracts on transition block
         if self.spec.is_feynman_transition_at_timestamp(
-            self.evm.block().number.to::<u64>(), 
-            self.evm.block().timestamp.to::<u64>(), 
+            self.evm.block().number().to::<u64>(), 
+            self.evm.block().timestamp().to::<u64>(), 
             parent_timestamp
         ) {
             info!(
                 target: "bsc::executor::feynman",
-                block_number = self.evm.block().number.to::<u64>(),
+                block_number = self.evm.block().number().to::<u64>(),
                 "Initializing Feynman contracts"
             );
-            self.initialize_feynman_contracts(self.evm.block().beneficiary)?;
+            self.initialize_feynman_contracts(self.evm.block().beneficiary())?;
         }
 
         // Deploy genesis contracts on Block 1
-        if self.evm.block().number == uint!(1U256) {
+        if self.evm.block().number() == uint!(1U256) {
             info!(
                 target: "bsc::executor::genesis",
                 "Deploying genesis contracts on Block 1"
             );
-            self.deploy_genesis_contracts(self.evm.block().beneficiary)?;
+            self.deploy_genesis_contracts(self.evm.block().beneficiary())?;
         }
 
         if self.ctx.is_miner {
@@ -544,7 +594,7 @@ where
         }
 
         // Update receipt height metric
-        let block_number = self.evm.block().number.to::<u64>();
+        let block_number = self.evm.block().number().to::<u64>();
         self.blockchain_metrics.current_receipt_height.set(block_number as f64);
         
         // Update block execution metrics
@@ -565,7 +615,7 @@ where
         
         // Calculate block receive time difference
         // This is the difference between current block timestamp and parent block timestamp
-        let current_timestamp = self.evm.block().timestamp.to::<u64>();
+        let current_timestamp = self.evm.block().timestamp().to::<u64>();
         if let Some(parent_header) = &self.inner_ctx.parent_header {
             let parent_timestamp = parent_header.timestamp;
             let time_diff = (current_timestamp as i64) - (parent_timestamp as i64);
@@ -583,6 +633,7 @@ where
                 receipts: self.receipts,
                 requests: Requests::default(),
                 gas_used: self.gas_used,
+                blob_gas_used: 0,
             },
         ))
     }

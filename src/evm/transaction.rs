@@ -1,7 +1,7 @@
 use alloy_rpc_types::{AccessList, TransactionRequest};
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnv};
 use reth_primitives::TransactionSigned;
-use reth_rpc_eth_api::transaction::TryIntoTxEnv;
+use reth_rpc_convert::transaction::TryIntoTxEnv;
 use revm::{
     context::{BlockEnv, CfgEnv, TxEnv},
     context_interface::transaction::Transaction,

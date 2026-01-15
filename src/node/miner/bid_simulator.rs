@@ -18,7 +18,7 @@ use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
 use reth::payload::EthPayloadBuilderAttributes;
 use reth::transaction_pool::BestTransactionsAttributes;
-use reth_chain_state::{ExecutedBlock, ExecutedTrieUpdates};
+use reth_chain_state::ExecutedBlock;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
 use reth_evm::execute::BlockBuilder;
@@ -34,6 +34,7 @@ use reth_primitives_traits::SignerRecoverable;
 use reth_provider::StateProviderFactory;
 use reth_provider::{BlockHashReader, HeaderProvider};
 use reth_revm::{database::StateProviderDatabase, db::State};
+use revm::context_interface::block::Block;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -167,7 +168,7 @@ where
         }
 
         let parent_hash = bid.parent_hash;
-        let parent_header = match self.client.header(&parent_hash) {
+        let parent_header = match self.client.header(parent_hash) {
             Ok(Some(header)) => {
                 let hash = header.hash_slow();
                 SealedHeader::new(header, hash)
@@ -410,7 +411,7 @@ where
             }
         };
         let mut block_gas_limit: u64 =
-            builder.evm_mut().block().gas_limit.saturating_sub(system_txs_gas);
+            builder.evm_mut().block().gas_limit().saturating_sub(system_txs_gas);
         block_gas_limit = block_gas_limit.saturating_sub(PAY_BID_TX_GAS_LIMIT);
 
         // todo: prefetch transactions
@@ -554,8 +555,8 @@ where
                     vec![execution_result.requests.clone()],
                 )),
                 hashed_state: Arc::new(hashed_state.clone()),
+                trie_updates: Arc::new(trie_updates),
             },
-            executed_trie: Some(ExecutedTrieUpdates::Present(Arc::new(trie_updates))),
         };
 
         // Acquire write lock to update best_bid
@@ -739,7 +740,7 @@ where
         B: BlockBuilder,
         B::Primitives: reth_primitives_traits::NodePrimitives<SignedTx = TransactionSigned>,
     {
-        let base_fee: u64 = builder.evm().block().basefee;
+        let base_fee: u64 = builder.evm().block().basefee();
         let blob_params = self.chain_spec.blob_params_at_timestamp(self.attributes.timestamp());
         let max_blob_count =
             blob_params.as_ref().map(|params| params.max_blob_count).unwrap_or_default();
@@ -889,7 +890,7 @@ where
         B: BlockBuilder,
         B::Primitives: reth_primitives_traits::NodePrimitives<SignedTx = TransactionSigned>,
     {
-        let base_fee = builder.evm_mut().block().basefee;
+        let base_fee = builder.evm_mut().block().basefee();
         let mut blob_fee = None;
 
         if BscHardforks::is_cancun_active_at_timestamp(

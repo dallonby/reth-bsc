@@ -22,6 +22,7 @@ use reth_evm::{
 };
 use reth_primitives_traits::{logs_bloom, SealedHeader};
 use reth_provider::{BlockExecutionResult, StateProvider};
+use revm::context_interface::block::Block;
 use revm::database::BundleState;
 use std::sync::Arc;
 
@@ -32,7 +33,10 @@ use std::sync::Arc;
 /// the #[non_exhaustive] attribute on the original BlockAssemblerInput.
 pub struct BscBlockAssemblerInput<'a, 'b, F: BlockExecutorFactory, H = Header> {
     /// Configuration of EVM used when executing the block.
-    pub evm_env: EvmEnv<<F::EvmFactory as reth_evm::EvmFactory>::Spec>,
+    pub evm_env: EvmEnv<
+        <F::EvmFactory as reth_evm::EvmFactory>::Spec,
+        <F::EvmFactory as reth_evm::EvmFactory>::BlockEnv,
+    >,
     /// BlockExecutorFactory::ExecutionCtx used to execute the block.
     pub execution_ctx: F::ExecutionCtx<'a>,
     /// Parent block header.
@@ -87,18 +91,18 @@ where
             execution_ctx: ctx,
             parent,
             transactions,
-            output: BlockExecutionResult { receipts, requests: _, gas_used },
+            output: BlockExecutionResult { receipts, requests: _, gas_used, .. },
             state_root,
             ..
         } = input;
 
         // Use the base EthBlockExecutionCtx for compatibility
         let eth_ctx = ctx.as_eth_context();
-        let timestamp = evm_env.block_env.timestamp.saturating_to();
+        let timestamp = evm_env.block_env.timestamp().saturating_to();
         let transactions_root = proofs::calculate_transaction_root(&transactions);
         let receipts_root = Receipt::calculate_receipt_root_no_memo(receipts);
         let logs_bloom = logs_bloom(receipts.iter().flat_map(|r| &r.logs));
-        let block_number = evm_env.block_env.number.saturating_to();
+        let block_number = evm_env.block_env.number().saturating_to();
 
         // parlia override header un-used fields.
         let mut withdrawals_root = None;
@@ -134,9 +138,9 @@ where
         }
 
         // baseFee should only be set after London fork (EIP-1559)
-        let block_number = evm_env.block_env.number.saturating_to();
+        let block_number = evm_env.block_env.number().saturating_to();
         let base_fee_per_gas = if self.chain_spec.is_london_active_at_block(block_number) {
-            Some(evm_env.block_env.basefee)
+            Some(evm_env.block_env.basefee())
         } else {
             None
         };
@@ -144,19 +148,19 @@ where
         let mut header = Header {
             parent_hash: eth_ctx.parent_hash,
             ommers_hash: EMPTY_OMMER_ROOT_HASH,
-            beneficiary: evm_env.block_env.beneficiary,
+            beneficiary: evm_env.block_env.beneficiary(),
             state_root,
             transactions_root,
             receipts_root,
             withdrawals_root,
             logs_bloom,
             timestamp,
-            mix_hash: evm_env.block_env.prevrandao.unwrap_or_default(),
+            mix_hash: evm_env.block_env.prevrandao().unwrap_or_default(),
             nonce: BEACON_NONCE.into(),
             base_fee_per_gas,
             number: block_number,
-            gas_limit: evm_env.block_env.gas_limit,
-            difficulty: evm_env.block_env.difficulty,
+            gas_limit: evm_env.block_env.gas_limit(),
+            difficulty: evm_env.block_env.difficulty(),
             gas_used: *gas_used,
             extra_data: self.extra_data.clone(),
             parent_beacon_block_root,
@@ -224,18 +228,18 @@ where
             execution_ctx: ctx,
             parent,
             transactions,
-            output: BlockExecutionResult { receipts, requests, gas_used },
+            output: BlockExecutionResult { receipts, requests, gas_used, .. },
             state_root,
             ..
         } = input;
 
         // Use the base EthBlockExecutionCtx for compatibility
         let eth_ctx = ctx.as_eth_context();
-        let timestamp = evm_env.block_env.timestamp.saturating_to();
+        let timestamp = evm_env.block_env.timestamp().saturating_to();
         let transactions_root = proofs::calculate_transaction_root(&transactions);
         let receipts_root = Receipt::calculate_receipt_root_no_memo(receipts);
         let logs_bloom = logs_bloom(receipts.iter().flat_map(|r| &r.logs));
-        let block_number = evm_env.block_env.number.saturating_to();
+        let block_number = evm_env.block_env.number().saturating_to();
 
         let withdrawals = self
             .chain_spec
@@ -267,7 +271,7 @@ where
 
         // baseFee should only be set after London fork (EIP-1559)
         let base_fee_per_gas = if self.chain_spec.is_london_active_at_block(block_number) {
-            Some(evm_env.block_env.basefee)
+            Some(evm_env.block_env.basefee())
         } else {
             None
         };
@@ -275,19 +279,19 @@ where
         let mut header = Header {
             parent_hash: eth_ctx.parent_hash,
             ommers_hash: EMPTY_OMMER_ROOT_HASH,
-            beneficiary: evm_env.block_env.beneficiary,
+            beneficiary: evm_env.block_env.beneficiary(),
             state_root,
             transactions_root,
             receipts_root,
             withdrawals_root,
             logs_bloom,
             timestamp,
-            mix_hash: evm_env.block_env.prevrandao.unwrap_or_default(),
+            mix_hash: evm_env.block_env.prevrandao().unwrap_or_default(),
             nonce: BEACON_NONCE.into(),
             base_fee_per_gas,
-            number: evm_env.block_env.number.saturating_to(),
-            gas_limit: evm_env.block_env.gas_limit,
-            difficulty: evm_env.block_env.difficulty,
+            number: evm_env.block_env.number().saturating_to(),
+            gas_limit: evm_env.block_env.gas_limit(),
+            difficulty: evm_env.block_env.difficulty(),
             gas_used: *gas_used,
             extra_data: self.extra_data.clone(),
             parent_beacon_block_root: eth_ctx.parent_beacon_block_root,

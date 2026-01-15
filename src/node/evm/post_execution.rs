@@ -14,7 +14,12 @@ use reth_evm::{eth::receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx}, execut
 use reth_primitives::{TransactionSigned, Transaction};
 use reth_revm::State;
 use crate::node::evm::ResultAndState;
-use revm::{context::{BlockEnv, TxEnv}, Database as RevmDatabase, DatabaseCommit};
+use revm::{
+    context::{BlockEnv, TxEnv},
+    context_interface::block::Block,
+    Database as RevmDatabase,
+    DatabaseCommit,
+};
 use alloy_consensus::{Header, TxReceipt, Transaction as AlloyTransaction, SignableTransaction};
 use alloy_primitives::{Address, BlockNumber, TxKind, U256, hex};
 use std::collections::HashMap;
@@ -31,6 +36,7 @@ where
         Tx: FromRecoveredTx<R::Transaction>
                 + FromRecoveredTx<TransactionSigned>
                 + FromTxWithEncoded<TransactionSigned>,
+        BlockEnv = BlockEnv,
     >,
     Spec: EthereumHardforks + crate::hardforks::BscHardforks + EthChainSpec + Hardforks + Clone + 'static,
     R: ReceiptBuilder<Transaction = TransactionSigned, Receipt: TxReceipt>,
@@ -45,45 +51,45 @@ where
         &mut self, 
         block: &BlockEnv
     ) -> Result<(), BlockExecutionError> {
-        tracing::debug!("Start to post check new block, block_number: {}, is_miner: {}", block.number, self.ctx.is_miner); 
+        tracing::debug!("Start to post check new block, block_number: {}, is_miner: {}", block.number(), self.ctx.is_miner); 
         self.verify_validators(self.inner_ctx.current_validators.clone(), self.inner_ctx.header.clone())?;
         self.verify_turn_length(self.inner_ctx.header.clone())?;
 
         // check the system txs.
         if self.inner_ctx.header.as_ref().unwrap().difficulty != DIFF_INTURN {
             tracing::debug!("Start to slash spoiled validator, block_number: {}, block_difficulty: {:?}, diff_inturn: {:?}", 
-                block.number, self.inner_ctx.header.as_ref().unwrap().difficulty, DIFF_INTURN);
+                block.number(), self.inner_ctx.header.as_ref().unwrap().difficulty, DIFF_INTURN);
             let snap = self.inner_ctx.snap.as_ref().unwrap();
             let spoiled_validator = snap.inturn_validator();
-            let signed_recently = if self.spec.is_plato_active_at_block(block.number.to()) {
+            let signed_recently = if self.spec.is_plato_active_at_block(block.number().to()) {
                 snap.sign_recently(spoiled_validator)
             } else {
                 snap.recent_proposers.iter().any(|(_, v)| *v == spoiled_validator)
             };
             if !signed_recently {
-                self.slash_spoiled_validator(block.beneficiary, spoiled_validator)?;
+                self.slash_spoiled_validator(block.beneficiary(), spoiled_validator)?;
                 let block_hash = self.inner_ctx.header.as_ref().map(|h| h.hash_slow());
                 tracing::info!(
                     target: "bsc::evm",
-                    block_number = %block.number,
+                    block_number = %block.number(),
                     block_hash = ?block_hash,
                     spoiled_validator = ?spoiled_validator,
-                    backoff_validator = ?block.beneficiary,
+                    backoff_validator = ?block.beneficiary(),
                     "Slash spoiled validator"
                 );
             }
         }
 
-        self.distribute_incoming(block.beneficiary)?;
+        self.distribute_incoming(block.beneficiary())?;
 
-        if self.spec.is_plato_active_at_block(block.number.to()) {
+        if self.spec.is_plato_active_at_block(block.number().to()) {
             self.distribute_finality_reward()?;
         }
 
         // update validator set after Feynman upgrade
-        let header_number = self.evm.block().number.to::<u64>();
-        let header_timestamp = self.evm.block().timestamp.to::<u64>();
-        let header_beneficiary = self.evm.block().beneficiary;
+        let header_number = self.evm.block().number().to::<u64>();
+        let header_timestamp = self.evm.block().timestamp().to::<u64>();
+        let header_beneficiary = self.evm.block().beneficiary();
         let parent_header = self.inner_ctx.parent_header.as_ref().unwrap().clone();
         if self.spec.is_feynman_active_at_timestamp(header_number, header_timestamp) &&
             is_breathe_block(parent_header.timestamp, header_timestamp) &&
@@ -104,7 +110,7 @@ where
         if !self.system_txs.is_empty() {
             tracing::error!(
                 "Remaining system txs after block execution, block_number: {}, len: {}",
-                block.number,
+                block.number(),
                 self.system_txs.len()
             );
             for tx in self.system_txs.iter() {
@@ -148,7 +154,7 @@ where
                     header.number, header.hash_slow(), epoch_length, turn_length);
             }
         }
-        tracing::trace!("Succeed to finalize new block, block_number: {}", block.number);
+        tracing::trace!("Succeed to finalize new block, block_number: {}", block.number());
         Ok(())
     }
 
@@ -425,7 +431,7 @@ where
 
         // Kepler introduced a max system reward limit, so we need to pay the system reward to the
         // system contract if the limit is not exceeded.
-        if !self.spec.is_kepler_active_at_timestamp(self.evm.block().number.to(), self.evm.block().timestamp.to()) &&
+        if !self.spec.is_kepler_active_at_timestamp(self.evm.block().number().to(), self.evm.block().timestamp().to()) &&
             system_reward_balance < U256::from(MAX_SYSTEM_REWARD)
         {
             let reward_to_system = block_reward >> SYSTEM_REWARD_PERCENT;
@@ -433,7 +439,7 @@ where
                 // send reward to SYSTEM_REWARD_CONTRACT from miner.
                 let tx = self.system_contracts.distribute_to_system(reward_to_system);
                 self.transact_system_tx(tx, validator)?;
-                tracing::debug!("Distribute to system, block_number: {}, reward_to_system: {}", self.evm.block().number, reward_to_system);
+                tracing::debug!("Distribute to system, block_number: {}, reward_to_system: {}", self.evm.block().number(), reward_to_system);
                 
                 // Track system rewards distribution
                 self.rewards_metrics.system_rewards_distributed_total.increment(1);
@@ -447,7 +453,7 @@ where
         // send all left gas fees to VALIDATOR_CONTRACT for distributing & burning.
         let tx = self.system_contracts.distribute_to_validator(validator, block_reward);
         self.transact_system_tx(tx, validator)?;
-        tracing::debug!("Distribute to validator, block_number: {}, block_reward: {}", self.evm.block().number, block_reward);
+        tracing::debug!("Distribute to validator, block_number: {}, block_reward: {}", self.evm.block().number(), block_reward);
         
         // Track validator rewards distribution
         self.rewards_metrics.validator_rewards_distributed_total.increment(1);
@@ -461,12 +467,12 @@ where
         &mut self,
     ) -> Result<(), BlockExecutionError> {
         // distribute finality reward per FF_REWARD_DISTRIBUTION_INTERVAL blocks.
-        let block_number = self.evm.block().number.to::<u64>();
+        let block_number = self.evm.block().number().to::<u64>();
         if !block_number.is_multiple_of(FF_REWARD_DISTRIBUTION_INTERVAL) {
             return Ok(());
         }
 
-        let validator = self.evm.block().beneficiary;
+        let validator = self.evm.block().beneficiary();
         let mut accumulated_weights: HashMap<Address, U256> = HashMap::new();
 
         let start = (block_number - FF_REWARD_DISTRIBUTION_INTERVAL).max(1);
@@ -502,7 +508,7 @@ where
             self.system_contracts.distribute_finality_reward(validators, weights),
             validator,
         )?;
-        tracing::debug!("Distribute finality reward, block_number: {}, validator: {}", self.evm.block().number, validator);
+        tracing::debug!("Distribute finality reward, block_number: {}, validator: {}", self.evm.block().number(), validator);
 
         Ok(())
     }
@@ -578,12 +584,12 @@ where
         &mut self, 
         block: &BlockEnv
     ) -> Result<(), BlockExecutionError> {
-        tracing::debug!("Start to finalize new block, block_number: {}, is_miner: {}", block.number, self.ctx.is_miner);
+        tracing::debug!("Start to finalize new block, block_number: {}, is_miner: {}", block.number(), self.ctx.is_miner);
         let snap = self.inner_ctx.snap.as_ref().unwrap();
         let epoch_length = snap.epoch_num;
         let expected_validator = snap.inturn_validator();
-        if block.beneficiary != expected_validator {
-            let signed_recently = if self.spec.is_plato_active_at_block(block.number.to()) {
+        if block.beneficiary() != expected_validator {
+            let signed_recently = if self.spec.is_plato_active_at_block(block.number().to()) {
                 snap.sign_recently(expected_validator)
             } else {
                 snap.recent_proposers.iter().any(|(_, v)| *v == expected_validator)
@@ -593,29 +599,29 @@ where
                 // this block may not become part of the canonical chain. The inturn validator's block
                 // has higher difficulty (DIFF_INTURN=2) and will be preferred by fork choice rules.
                 // This slash attempt will only succeed if the inturn validator truly failed to produce a block.
-                self.slash_spoiled_validator(block.beneficiary, expected_validator)?;
+                self.slash_spoiled_validator(block.beneficiary(), expected_validator)?;
                 let block_hash = self.inner_ctx.header.as_ref().map(|h| h.hash_slow());
                 tracing::trace!(
                     target: "bsc::evm",
-                    block_number = %block.number,
+                    block_number = %block.number(),
                     block_hash = ?block_hash,
                     spoiled_validator = ?expected_validator,
-                    backoff_validator = ?block.beneficiary,
+                    backoff_validator = ?block.beneficiary(),
                     "Try slash spoiled validator by miner"
                 );
             }
         }
 
-        self.distribute_incoming(block.beneficiary)?;
+        self.distribute_incoming(block.beneficiary())?;
 
-        if self.spec.is_plato_active_at_block(block.number.to()) {
+        if self.spec.is_plato_active_at_block(block.number().to()) {
             self.distribute_finality_reward()?;
         }
 
         // update validator set after Feynman upgrade
-        let header_number = self.evm.block().number.to::<u64>();
-        let header_timestamp = self.evm.block().timestamp.to::<u64>();
-        let header_beneficiary = self.evm.block().beneficiary;
+        let header_number = self.evm.block().number().to::<u64>();
+        let header_timestamp = self.evm.block().timestamp().to::<u64>();
+        let header_beneficiary = self.evm.block().beneficiary();
         let parent_header = self.inner_ctx.parent_header.as_ref().unwrap().clone();
         if self.spec.is_feynman_active_at_timestamp(header_number, header_timestamp) &&
             is_breathe_block(parent_header.timestamp, header_timestamp) &&
