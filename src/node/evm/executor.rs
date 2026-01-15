@@ -56,6 +56,8 @@ where
     pub(super) evm: EVM,
     /// Gas used in the block.
     pub(super) gas_used: u64,
+    /// Total blob gas used in the block.
+    pub(super) blob_gas_used: u64,
     /// Receipts of executed transactions.
     pub(super) receipts: Vec<R::Receipt>,
     /// System txs
@@ -132,6 +134,7 @@ where
             spec,
             evm,
             gas_used: 0,
+            blob_gas_used: 0,
             receipts: vec![],
             system_txs: vec![],
             receipt_builder,
@@ -156,6 +159,20 @@ where
             executor_metrics: BscExecutorMetrics::default(),
             rewards_metrics: BscRewardsMetrics::default(),
         }
+    }
+
+    /// Accumulate blob gas used for Cancun blocks.
+    fn accumulate_blob_gas_used<T: Transaction>(&mut self, tx: &T) {
+        if !BscHardforks::is_cancun_active_at_timestamp(
+            &self.spec,
+            self.evm.block().number().to::<u64>(),
+            self.evm.block().timestamp().to::<u64>(),
+        ) {
+            return;
+        }
+
+        self.blob_gas_used =
+            self.blob_gas_used.saturating_add(tx.blob_gas_used().unwrap_or_default());
     }
 
     /// Applies system contract upgrades if the Feynman fork is not yet active.
@@ -426,6 +443,7 @@ where
 
         let gas_used = result.gas_used();
         self.gas_used += gas_used;
+        self.accumulate_blob_gas_used(tx.tx());
 
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
             tx: tx.tx(),
@@ -476,6 +494,7 @@ where
 
         // append gas used
         self.gas_used += gas_used;
+        self.accumulate_blob_gas_used(tx.tx());
 
         // Push transaction changeset and calculate header bloom filter for receipt.
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
@@ -530,6 +549,7 @@ where
 
         let gas_used = result.gas_used();
         self.gas_used += gas_used;
+        self.accumulate_blob_gas_used(&tx_ref);
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
             tx: &tx_ref,
             evm: &self.evm,
@@ -633,7 +653,7 @@ where
                 receipts: self.receipts,
                 requests: Requests::default(),
                 gas_used: self.gas_used,
-                blob_gas_used: 0,
+                blob_gas_used: self.blob_gas_used,
             },
         ))
     }
