@@ -339,17 +339,17 @@ impl BscNetworkBuilder {
         let mut network_config = ctx.build_network_config(network_builder);
         network_config.status.forkid = network_config.fork_filter.current();
 
-        // Initialize BSC protocol registry with proxyed peers from config
+        // Initialize BSC protocol registry with proxied peers from config
         // This mirrors the same functionality in the main peer manager
-        let proxyed_node_ids = network_config.peers_config.proxyed_node_ids.clone();
-        if !proxyed_node_ids.is_empty() {
+        let proxied_node_ids = network_config.peers_config.proxied_node_ids.clone();
+        if !proxied_node_ids.is_empty() {
             tracing::info!(
                 target: "bsc::net",
-                count = proxyed_node_ids.len(),
-                "Initializing BSC protocol with proxyed peers"
+                count = proxied_node_ids.len(),
+                "Initializing BSC protocol with proxied peers"
             );
             crate::node::network::bsc_protocol::registry::initialize_proxyed_peers(
-                proxyed_node_ids,
+                proxied_node_ids,
             );
         }
 
