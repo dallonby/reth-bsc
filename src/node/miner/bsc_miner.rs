@@ -198,11 +198,22 @@ where
                                     );
                                 });
                             }
+                            Ok(None) => {
+                                if let Some(h) = crate::node::evm::util::get_header_by_hash_from_cache(&tip_header.hash()) {
+                                    tracing::debug!(target: "bsc::vote", "Succeed to get header for tip block from cache, validator: {}, tip: {}", self.validator_address, tip_header.number());
+                                    tokio::spawn(async move {
+                                        crate::node::vote_producer::maybe_produce_and_broadcast_for_head(
+                                            spec,
+                                            sp.as_ref(),
+                                            &h,
+                                        );
+                                    });
+                                } else {
+                                    tracing::error!(target: "bsc::vote", "Failed to get header for tip block, validator: {}, tip: {}", self.validator_address, tip_header.number());
+                                }
+                            }
                             Err(e) => {
                                 tracing::error!(target: "bsc::vote", "Failed to get header for tip block, validator: {}, tip: {}, due to {}", self.validator_address, tip_header.number(), e);
-                            }
-                            _ => {
-                                tracing::error!(target: "bsc::vote", "Failed to get header for tip block, validator: {}, tip: {}", self.validator_address, tip_header.number());
                             }
                         }
                     }
