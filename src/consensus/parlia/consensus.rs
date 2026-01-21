@@ -662,9 +662,14 @@ where
         }
 
         let mut cache = TURN_LENGTH_CACHE.lock().unwrap();
-        let turn_length = *cache.get(&new_header.parent_hash).ok_or(
-            ParliaConsensusError::TurnLengthNotFound { block_hash: new_header.parent_hash },
-        )?;
+        let turn_length = cache
+            .get(&new_header.parent_hash)
+            .copied()
+            .or_else(|| parent_snap.turn_length)
+            .unwrap_or(DEFAULT_TURN_LENGTH);
+
+        // Warm cache for future blocks (helps after restarts).
+        cache.insert(new_header.parent_hash, turn_length);
 
         let mut extra_data = new_header.extra_data.to_vec();
         extra_data.push(turn_length);
