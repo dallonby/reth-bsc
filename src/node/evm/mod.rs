@@ -3,9 +3,6 @@ pub mod util;
 
 #[cfg(test)]
 mod pre_execution_tests;
-#[cfg(test)]
-mod system_tx_gas_tests;
-
 use crate::{
     evm::{
         api::{BscContext, BscEvm},

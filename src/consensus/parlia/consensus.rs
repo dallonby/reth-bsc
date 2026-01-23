@@ -665,7 +665,7 @@ where
         let turn_length = cache
             .get(&new_header.parent_hash)
             .copied()
-            .or_else(|| parent_snap.turn_length)
+            .or(parent_snap.turn_length)
             .unwrap_or(DEFAULT_TURN_LENGTH);
 
         // Warm cache for future blocks (helps after restarts).
