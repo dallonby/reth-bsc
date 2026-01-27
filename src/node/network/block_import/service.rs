@@ -102,7 +102,7 @@ where
 
 impl<Provider> ImportService<Provider>
 where
-    Provider: BlockNumReader + HeaderProvider<Header = Header> + Clone + 'static,
+    Provider: BlockNumReader + HeaderProvider<Header = Header> + Clone + Send + Sync + 'static,
 {
     /// Create a new block import service
     pub fn new(
@@ -408,7 +408,13 @@ where
 
 impl<Provider> Future for ImportService<Provider>
 where
-    Provider: BlockNumReader + HeaderProvider<Header = Header> + Clone + 'static + Unpin,
+    Provider: BlockNumReader
+        + HeaderProvider<Header = Header>
+        + Clone
+        + Send
+        + Sync
+        + 'static
+        + Unpin,
 {
     type Output = Result<(), Box<dyn std::error::Error>>;
 

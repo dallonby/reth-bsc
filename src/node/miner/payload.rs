@@ -18,17 +18,16 @@ use reth::transaction_pool::error::InvalidPoolTransactionError;
 use reth::transaction_pool::BestTransactionsAttributes;
 use reth::transaction_pool::{PoolTransaction, TransactionPool};
 use reth_basic_payload_builder::PayloadConfig;
-use reth_chain_state::ExecutedBlock;
 use reth_chainspec::EthChainSpec;
 use reth_chainspec::EthereumHardforks;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
 use reth_evm::block::{BlockExecutionError, BlockValidationError};
 use reth_evm::execute::BlockBuilder;
 use reth_evm::execute::BlockBuilderOutcome;
-use reth_evm::execute::ExecutionOutcome;
 use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+use reth_execution_types::BlockExecutionOutput;
 use reth_payload_primitives::PayloadBuilderAttributes;
-use reth_payload_primitives::{BuiltPayload, PayloadBuilderError};
+use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock, PayloadBuilderError};
 use reth_primitives::HeaderTy;
 use reth_primitives::InvalidTransactionError;
 use reth_primitives::TransactionSigned;
@@ -38,6 +37,7 @@ use reth_revm::cached::CachedReads;
 use reth_revm::cancelled::ManualCancel;
 use reth_revm::{database::StateProviderDatabase, db::State};
 use revm::context_interface::block::Block;
+use either::Either;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -189,6 +189,7 @@ where
                     gas_limit: self.builder_config.gas_limit(parent_header.gas_limit),
                     parent_beacon_block_root: attributes.parent_beacon_block_root(),
                     withdrawals: Some(attributes.withdrawals().clone()),
+                    extra_data: self.builder_config.extra_data.clone(),
                 },
             )
             .map_err(PayloadBuilderError::other)?;
@@ -260,7 +261,7 @@ where
                 );
                 best_tx_list.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::other(BlacklistedAddressError()),
+                    &InvalidPoolTransactionError::other(BlacklistedAddressError()),
                 );
                 continue;
             }
@@ -285,7 +286,7 @@ where
                 // continue
                 best_tx_list.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
+                    &InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
                         block_gas_limit,
                     ),
@@ -323,7 +324,7 @@ where
                     );
                     best_tx_list.mark_invalid(
                         &pool_tx,
-                        InvalidPoolTransactionError::Eip4844(
+                        &InvalidPoolTransactionError::Eip4844(
                             Eip4844PoolTransactionError::TooManyEip4844Blobs {
                                 have: block_blob_count + tx_blob_count,
                                 permitted: max_blob_count,
@@ -343,7 +344,7 @@ where
                     {
                         best_tx_list.mark_invalid(
                             &pool_tx,
-                            InvalidPoolTransactionError::Eip4844(
+                            &InvalidPoolTransactionError::Eip4844(
                                 Eip4844PoolTransactionError::TooManyEip4844Blobs {
                                     have: block_blob_count + tx_blob_count,
                                     permitted: max_blob_count,
@@ -386,7 +387,7 @@ where
                             "Skipping blob transaction due to invalid sidecar"
                         );
                         best_tx_list
-                            .mark_invalid(&pool_tx, InvalidPoolTransactionError::Eip4844(error));
+                            .mark_invalid(&pool_tx, &InvalidPoolTransactionError::Eip4844(error));
                         continue;
                     }
                 };
@@ -419,7 +420,7 @@ where
                         );
                         best_tx_list.mark_invalid(
                             &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
+                            &InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::NonceNotConsistent {
                                     tx: tx.nonce(),
                                     state: 0_u64, // TODO: get the nonce from the state later.
@@ -442,7 +443,7 @@ where
                         );
                         best_tx_list.mark_invalid(
                             &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
+                            &InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
@@ -570,21 +571,20 @@ where
         plain.body.sidecars = Some(blob_sidecars);
         sealed_block = Arc::new(plain.into());
 
+        let requests = execution_result.requests.clone();
+        let execution_outcome = BlockExecutionOutput { state: db.take_bundle(), result: execution_result };
+        let executed: BuiltPayloadExecutedBlock<_> = BuiltPayloadExecutedBlock {
+            recovered_block: Arc::new(block),
+            execution_output: Arc::new(execution_outcome),
+            hashed_state: Either::Left(Arc::new(hashed_state)),
+            trie_updates: Either::Left(Arc::new(trie_updates)),
+        };
+
         let payload = BscBuiltPayload {
             block: sealed_block.clone(),
             fees: total_fees,
-            requests: Some(execution_result.requests.clone()),
-            executed_block: ExecutedBlock {
-                recovered_block: Arc::new(block),
-                execution_output: Arc::new(ExecutionOutcome::new(
-                    db.take_bundle(),
-                    vec![execution_result.receipts.clone()],
-                    sealed_block.header().number(),
-                    vec![execution_result.requests.clone()],
-                )),
-                hashed_state: Arc::new(hashed_state),
-                trie_updates: Arc::new(trie_updates),
-            },
+            requests: Some(requests),
+            executed_block: executed,
         };
         Ok(payload)
     }
@@ -619,6 +619,7 @@ where
                     gas_limit: self.builder_config.gas_limit(parent_header.gas_limit),
                     parent_beacon_block_root: attributes.parent_beacon_block_root(),
                     withdrawals: Some(attributes.withdrawals().clone()),
+                    extra_data: self.builder_config.extra_data.clone(),
                 },
             )
             .map_err(PayloadBuilderError::other)?;
@@ -666,21 +667,20 @@ where
             "Empty block payload built successfully (no user transactions)"
         );
 
+        let requests = execution_result.requests.clone();
+        let execution_outcome = BlockExecutionOutput { state: db.take_bundle(), result: execution_result };
+        let executed: BuiltPayloadExecutedBlock<_> = BuiltPayloadExecutedBlock {
+            recovered_block: Arc::new(block),
+            execution_output: Arc::new(execution_outcome),
+            hashed_state: Either::Left(Arc::new(hashed_state)),
+            trie_updates: Either::Left(Arc::new(trie_updates)),
+        };
+
         let payload = BscBuiltPayload {
             block: sealed_block.clone(),
             fees: total_fees,
-            requests: Some(execution_result.requests.clone()),
-            executed_block: ExecutedBlock {
-                recovered_block: Arc::new(block),
-                execution_output: Arc::new(ExecutionOutcome::new(
-                    db.take_bundle(),
-                    vec![execution_result.receipts.clone()],
-                    sealed_block.header().number(),
-                    vec![execution_result.requests.clone()],
-                )),
-                hashed_state: Arc::new(hashed_state),
-                trie_updates: Arc::new(trie_updates),
-            },
+            requests: Some(requests),
+            executed_block: executed,
         };
         Ok(payload)
     }
@@ -1118,19 +1118,31 @@ where
         let mut bid_block_hash = None;
         let best_bid = self.simulator.get_best_bid(self.mining_ctx.parent_header.hash());
         if let Some(bid) = best_bid {
-            info!(
-                target: "bsc::miner::payload",
-                trace_id = self.trace_id,
-                block_number = bid.bid.block_number,
-                is_inturn = self.mining_ctx.is_inturn,
-                builder = ?bid.bid.builder,
-                gas_fee = %bid.bid.gas_fee,
-                bid_hash = %bid.bid.bid_hash,
-                gas_fee = %bid.bsc_payload.fees(),
-                "Found best bid"
-            );
-            bid_block_hash = Some(bid.bsc_payload.block.hash());
-            self.potential_payloads.push(bid.bsc_payload);
+            let bid_info = bid.bid;
+            if let Some(bsc_payload) = bid.bsc_payload {
+                info!(
+                    target: "bsc::miner::payload",
+                    trace_id = self.trace_id,
+                    block_number = bid_info.block_number,
+                    is_inturn = self.mining_ctx.is_inturn,
+                    builder = ?bid_info.builder,
+                    gas_fee = %bid_info.gas_fee,
+                    bid_hash = %bid_info.bid_hash,
+                    gas_fee = %bsc_payload.fees(),
+                    "Found best bid"
+                );
+                bid_block_hash = Some(bsc_payload.block.hash());
+                self.potential_payloads.push(bsc_payload);
+            } else {
+                warn!(
+                    target: "bsc::miner::payload",
+                    trace_id = self.trace_id,
+                    block_number = bid_info.block_number,
+                    builder = ?bid_info.builder,
+                    bid_hash = %bid_info.bid_hash,
+                    "Best bid missing built payload"
+                );
+            }
         }
         if let Some(best_payload) = self.pick_best_payload() {
             let best_payload_hash = best_payload.block.hash();

@@ -17,8 +17,7 @@ use reth::{
 };
 use reth_evm::ConfigureEvm;
 use reth_payload_builder_primitives::Events;
-use reth_payload_primitives::BuiltPayload;
-use reth_chain_state::ExecutedBlock;
+use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives::{SealedBlock, TransactionSigned};
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +27,7 @@ use crate::BscBlock;
 
 /// Built payload for BSC. This is similar to [`EthBuiltPayload`] but without sidecars as those
 /// included into [`BscBlock`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BscBuiltPayload {
     /// The built block
     pub(crate) block: Arc<SealedBlock<BscBlock>>,
@@ -37,7 +36,7 @@ pub struct BscBuiltPayload {
     /// The requests of the payload
     pub(crate) requests: Option<Requests>,
     /// The executed block
-    pub(crate) executed_block: ExecutedBlock<BscPrimitives>,
+    pub(crate) executed_block: BuiltPayloadExecutedBlock<BscPrimitives>,
 }
 
 impl BuiltPayload for BscBuiltPayload {
@@ -55,7 +54,7 @@ impl BuiltPayload for BscBuiltPayload {
         self.requests.clone()
     }
 
-    fn executed_block(&self) -> Option<ExecutedBlock<Self::Primitives>> {
+    fn executed_block(&self) -> Option<BuiltPayloadExecutedBlock<Self::Primitives>> {
         Some(self.executed_block.clone())
     }
 }

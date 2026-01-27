@@ -126,8 +126,6 @@ impl<ChainSpec: EthChainSpec + BscHardforks + std::fmt::Debug + Send + Sync + 's
 
 
 impl<ChainSpec: EthChainSpec + BscHardforks + std::fmt::Debug + Send + Sync + 'static> Consensus<BscBlock> for Parlia<ChainSpec> {
-    type Error = ConsensusError;
-
     fn validate_body_against_header(
         &self,
         _body: &<BscBlock as Block>::Body,

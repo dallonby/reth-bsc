@@ -1,15 +1,15 @@
 use super::patch::HertzPatchManager;
 use crate::{
-    consensus::{SYSTEM_ADDRESS, parlia::{Parlia, Snapshot, VoteAddress}}, evm::transaction::BscTxEnv, hardforks::BscHardforks, metrics::{BscBlockchainMetrics, BscConsensusMetrics, BscExecutorMetrics, BscRewardsMetrics, BscVoteMetrics}, node::evm::config::BscExecutionSharedCtx, system_contracts::{
+    consensus::{SYSTEM_ADDRESS, parlia::{Parlia, Snapshot, VoteAddress}}, evm::{precompiles, transaction::BscTxEnv}, hardforks::BscHardforks, metrics::{BscBlockchainMetrics, BscConsensusMetrics, BscExecutorMetrics, BscRewardsMetrics, BscVoteMetrics}, node::evm::config::BscExecutionSharedCtx, system_contracts::{
         SystemContract, feynman_fork::ValidatorElectionInfo, get_upgrade_system_contracts, is_system_transaction
     }
 };
 use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::{eip7685::Requests, Encodable2718};
 use alloy_evm::{block::{ExecutableTx, StateChangeSource}, eth::receipt_builder::ReceiptBuilderCtx};
-use alloy_primitives::{uint, Address, U256, BlockNumber, Bytes};
+use alloy_primitives::{hex, uint, Address, U256, BlockNumber, Bytes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
-use super::config::BscBlockExecutionCtx;
+use super::config::{BscBlockExecutionCtx, revm_spec_by_timestamp_and_block_number};
 use reth_evm::{
     block::{BlockValidationError, CommitChanges},
     eth::receipt_builder::ReceiptBuilder,
@@ -372,7 +372,7 @@ where
         // Update current block height and header height metrics
         let block_number = block_env.number().to::<u64>();
         self.consensus_metrics.current_block_height.set(block_number as f64);
-        
+
         // pre check and prepare some intermediate data for commit parlia snapshot in finish function.
         if self.ctx.is_miner {
             self.prepare_new_block(&block_env)?;
@@ -424,6 +424,37 @@ where
         }
 
         let tx_hash = tx.tx().trie_hash();
+        let block_number = self.evm.block().number().to::<u64>();
+        let timestamp = self.evm.block().timestamp().to::<u64>();
+        let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
+        let (to, selector, input_len) = {
+            let to = tx.tx().to();
+            let input = tx.tx().input();
+            let selector = if input.len() >= 4 {
+                Some(hex::encode(&input[..4]))
+            } else {
+                None
+            };
+            (to, selector, input.len())
+        };
+
+        precompiles::push_precompile_trace_context(precompiles::PrecompileTraceContext::from_parts(
+            block_number,
+            spec,
+            false,
+            Some(tx_hash),
+            to,
+            selector,
+            input_len,
+        ));
+        struct PrecompileTracePopGuard;
+        impl Drop for PrecompileTracePopGuard {
+            fn drop(&mut self) {
+                precompiles::pop_precompile_trace_context();
+            }
+        }
+        let _precompile_trace_pop_guard = PrecompileTracePopGuard;
+
         self.evm
             .transact(&tx)
             .map_err(|err| BlockExecutionError::evm(err, tx_hash))
@@ -475,11 +506,43 @@ where
             .into());
         }
 
+        let tx_hash = tx.tx().trie_hash();
+        let block_number = self.evm.block().number().to::<u64>();
+        let timestamp = self.evm.block().timestamp().to::<u64>();
+        let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
+        let (to, selector, input_len) = {
+            let to = tx.tx().to();
+            let input = tx.tx().input();
+            let selector = if input.len() >= 4 {
+                Some(hex::encode(&input[..4]))
+            } else {
+                None
+            };
+            (to, selector, input.len())
+        };
+
+        precompiles::push_precompile_trace_context(precompiles::PrecompileTraceContext::from_parts(
+            block_number,
+            spec,
+            false,
+            Some(tx_hash),
+            to,
+            selector,
+            input_len,
+        ));
+        struct PrecompileTracePopGuard;
+        impl Drop for PrecompileTracePopGuard {
+            fn drop(&mut self) {
+                precompiles::pop_precompile_trace_context();
+            }
+        }
+        let _precompile_trace_pop_guard = PrecompileTracePopGuard;
+
         // Execute transaction.
         let ResultAndState { result, state } = self
             .evm
             .transact(&tx)
-            .map_err(|err| BlockExecutionError::evm(err, tx.tx().trie_hash()))?;
+            .map_err(|err| BlockExecutionError::evm(err, tx_hash))?;
 
         if !f(&result).should_commit() {
             return Ok(None);
@@ -536,6 +599,37 @@ where
             .into());
         }
         let tx_hash = tx.tx().trie_hash();
+        let block_number = self.evm.block().number().to::<u64>();
+        let timestamp = self.evm.block().timestamp().to::<u64>();
+        let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
+        let (to, selector, input_len) = {
+            let to = tx.tx().to();
+            let input = tx.tx().input();
+            let selector = if input.len() >= 4 {
+                Some(hex::encode(&input[..4]))
+            } else {
+                None
+            };
+            (to, selector, input.len())
+        };
+
+        precompiles::push_precompile_trace_context(precompiles::PrecompileTraceContext::from_parts(
+            block_number,
+            spec,
+            false,
+            Some(tx_hash),
+            to,
+            selector,
+            input_len,
+        ));
+        struct PrecompileTracePopGuard;
+        impl Drop for PrecompileTracePopGuard {
+            fn drop(&mut self) {
+                precompiles::pop_precompile_trace_context();
+            }
+        }
+        let _precompile_trace_pop_guard = PrecompileTracePopGuard;
+
         let tx_ref = tx.tx().clone();
         let result_and_state =
             self.evm.transact(tx).map_err(|err| BlockExecutionError::evm(err, tx_hash))?;
@@ -668,6 +762,10 @@ where
 
     fn evm(&self) -> &Self::Evm {
         &self.evm
+    }
+
+    fn receipts(&self) -> &[Self::Receipt] {
+        &self.receipts
     }
 
 }

@@ -1,12 +1,14 @@
 use super::executor::BscBlockExecutor;
 use super::error::{BscBlockExecutionError, BscBlockValidationError};
 use super::util::set_nonce;
+use super::config::revm_spec_by_timestamp_and_block_number;
 use crate::consensus::parlia::{FF_REWARD_DISTRIBUTION_INTERVAL};
 use crate::node::evm::pre_execution::TURN_LENGTH_CACHE;
 use crate::node::evm::util::get_header_by_hash_from_cache;
 use crate::node::miner::signer::{sign_system_transaction, is_signer_initialized};
 use crate::consensus::parlia::{DIFF_INTURN, VoteAddress, VoteAttestation, snapshot::DEFAULT_TURN_LENGTH, constants::COLLECT_ADDITIONAL_VOTES_REWARD_RATIO, util::is_breathe_block};
 use crate::consensus::{SYSTEM_ADDRESS, MAX_SYSTEM_REWARD, SYSTEM_REWARD_PERCENT};
+use crate::evm::precompiles;
 use crate::evm::transaction::BscTxEnv;
 use crate::system_contracts::{SLASH_CONTRACT, SYSTEM_REWARD_CONTRACT, STAKE_HUB_CONTRACT, feynman_fork::{ValidatorElectionInfo, get_top_validators_by_voting_power, ElectedValidators}};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
@@ -20,6 +22,7 @@ use revm::{
     Database as RevmDatabase,
     DatabaseCommit,
 };
+use revm_database::DatabaseCommitExt;
 use alloy_consensus::{Header, TxReceipt, Transaction as AlloyTransaction, SignableTransaction};
 use alloy_primitives::{Address, BlockNumber, TxKind, U256, hex};
 use std::collections::HashMap;
@@ -347,14 +350,22 @@ where
         }
 
         // Create TxEnv first (before moving transaction)
+        let tx_to = transaction.to();
+        let tx_input = transaction.input();
+        let tx_selector = if tx_input.len() >= 4 {
+            Some(hex::encode(&tx_input[..4]))
+        } else {
+            None
+        };
+        let tx_input_len = tx_input.len();
         let tx_env = BscTxEnv {
             base: TxEnv {
                 caller: sender,
-                kind: TxKind::Call(transaction.to().unwrap()),
+                kind: TxKind::Call(tx_to.unwrap()),
                 nonce: account.nonce,
                 gas_limit: u64::MAX / 2,
                 value: transaction.value(),
-                data: transaction.input().clone(),
+                data: tx_input.clone(),
                 gas_price: 0,
                 chain_id: Some(self.spec.chain().id()),
                 gas_priority_fee: None,
@@ -366,6 +377,28 @@ where
             },
             is_system_transaction: true,
         };
+
+        let block_number = self.evm.block().number().to::<u64>();
+        let timestamp = self.evm.block().timestamp().to::<u64>();
+        let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
+        let tx_hash = signed_tx.as_ref().map(|tx| tx.tx_hash()).copied();
+
+        precompiles::push_precompile_trace_context(precompiles::PrecompileTraceContext::from_parts(
+            block_number,
+            spec,
+            true,
+            tx_hash,
+            tx_to,
+            tx_selector.clone(),
+            tx_input_len,
+        ));
+        struct PrecompileTracePopGuard;
+        impl Drop for PrecompileTracePopGuard {
+            fn drop(&mut self) {
+                precompiles::pop_precompile_trace_context();
+            }
+        }
+        let _precompile_trace_pop_guard = PrecompileTracePopGuard;
 
         let result_and_state = self.evm.transact(tx_env).map_err(BlockExecutionError::other)?;
         let ResultAndState { result, state } = result_and_state;

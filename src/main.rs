@@ -1,5 +1,5 @@
 use clap::{Args, Parser};
-use reth::{builder::NodeHandle, cli::Cli, consensus::{ConsensusError, FullConsensus}};
+use reth::{builder::NodeHandle, cli::Cli, consensus::FullConsensus};
 use reth_bsc::node::consensus::BscConsensus;
 use reth_bsc::{
     chainspec::{parser::BscChainSpecParser, genesis_override},
@@ -124,7 +124,7 @@ fn main() -> eyre::Result<()> {
             (
                 BscEvmConfig::new(spec.clone()),
                 Arc::new(BscConsensus::new(spec))
-                    as Arc<dyn FullConsensus<BscPrimitives, Error = ConsensusError>>,
+                    as Arc<dyn FullConsensus<BscPrimitives>>,
             )
         },
         async move |builder, args| {

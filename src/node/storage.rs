@@ -18,16 +18,14 @@ where
     fn write_block_bodies(
         &self,
         provider: &Provider,
-        bodies: Vec<(u64, Option<BscBlockBody>)>,
+        bodies: Vec<(u64, Option<&BscBlockBody>)>,
     ) -> ProviderResult<()> {
         let (eth_bodies, _sidecars) = bodies
             .into_iter()
             .map(|(block_number, body)| {
-                if let Some(BscBlockBody { inner, sidecars }) = body {
-                    ((block_number, Some(inner)), (block_number, Some(sidecars)))
-                } else {
-                    ((block_number, None), (block_number, None))
-                }
+                let inner = body.map(|b| &b.inner);
+                let sidecars = body.and_then(|b| b.sidecars.as_ref());
+                ((block_number, inner), (block_number, sidecars))
             })
             .unzip::<_, _, Vec<_>, Vec<_>>();
         self.0.write_block_bodies(provider, eth_bodies)?;

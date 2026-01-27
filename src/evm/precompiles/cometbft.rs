@@ -395,7 +395,7 @@ mod tests {
             ));
 
             let result = cometbft_light_block_validation_run(&input, 100_000);
-            let PrecompileOutput { gas_used, bytes, reverted } = match result {
+            let PrecompileOutput { gas_used, bytes, reverted, .. } = match result {
                 Ok(output) => output,
                 Err(_) => panic!("cometbft_light_block_validation_run failed"),
             };
@@ -681,7 +681,7 @@ mod tests {
         ));
 
         let result = cometbft_light_block_validation_run_before_hertz(&input, 100_000);
-        let PrecompileOutput { gas_used, bytes, reverted } = match result {
+        let PrecompileOutput { gas_used, bytes, reverted, .. } = match result {
             Ok(output) => output,
             Err(_) => panic!("cometbft_light_block_validation_run failed"),
         };

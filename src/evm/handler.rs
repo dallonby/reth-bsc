@@ -3,9 +3,10 @@
 use crate::evm::{
     api::{BscContext, BscEvm},
     blacklist,
+    precompiles,
 };
 
-use alloy_primitives::{U256};
+use alloy_primitives::{hex, TxKind, U256};
 use reth_evm::Database;
 use revm::{bytecode::Bytecode, primitives::eip7702};
 
@@ -22,19 +23,20 @@ use revm::{
     interpreter::{interpreter::EthInterpreter, Host, InitialAndFloorGas, SuccessOrHalt},
     primitives::hardfork::SpecId,
 };
+use revm_context_interface::journaled_state::account::JournaledAccountTr;
 
 use crate::consensus::SYSTEM_ADDRESS;
-pub struct BscHandler<DB: revm::database::Database, INSP> {
+pub struct BscHandler<DB: revm::Database, INSP> {
     pub mainnet: MainnetHandler<BscEvm<DB, INSP>, EVMError<DB::Error>, EthFrame>,
 }
 
-impl<DB: revm::database::Database, INSP> BscHandler<DB, INSP> {
+impl<DB: revm::Database, INSP> BscHandler<DB, INSP> {
     pub fn new() -> Self {
         Self { mainnet: MainnetHandler::default() }
     }
 }
 
-impl<DB: revm::database::Database, INSP> Default for BscHandler<DB, INSP> {
+impl<DB: revm::Database, INSP> Default for BscHandler<DB, INSP> {
     fn default() -> Self {
         Self::new()
     }
@@ -105,7 +107,8 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
 
             // 7. Add `PER_EMPTY_ACCOUNT_COST - PER_AUTH_BASE_COST` gas to the global refund counter
             //    if `authority` exists in the trie.
-            if !(authority_acc.is_empty() && authority_acc.is_loaded_as_not_existing_not_touched()) {
+            let account = authority_acc.account();
+            if !(account.is_empty() && account.is_loaded_as_not_existing_not_touched()) {
                 refunded_accounts += 1;
             }
 
@@ -136,16 +139,54 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
 
     fn validate_initial_tx_gas(
         &self,
-        evm: &Self::Evm,
+        evm: &mut Self::Evm,
     ) -> Result<revm::interpreter::InitialAndFloorGas, Self::Error> {
-        let ctx = evm.ctx_ref();
-        let tx = ctx.tx();
+        // Extract trace context parts without holding a borrow across the validation call.
+        let (block_number, spec, is_system_tx, to, selector, input_len) = {
+            let ctx = evm.ctx_ref();
+            let tx = ctx.tx();
+            let to = match tx.base.kind {
+                TxKind::Call(addr) => Some(addr),
+                _ => None,
+            };
+            let input = tx.base.data.as_ref();
+            let selector = if input.len() >= 4 {
+                Some(hex::encode(&input[..4]))
+            } else {
+                None
+            };
+            (
+                ctx.block().number.to::<u64>(),
+                *ctx.cfg().spec(),
+                tx.is_system_transaction,
+                to,
+                selector,
+                input.len(),
+            )
+        };
 
-        if tx.is_system_transaction {
-            return Ok(InitialAndFloorGas { initial_gas: 0, floor_gas: 0 });
+        precompiles::push_precompile_trace_context(precompiles::PrecompileTraceContext::from_parts(
+            block_number,
+            spec,
+            is_system_tx,
+            None,
+            to,
+            selector,
+            input_len,
+        ));
+
+        let res = if is_system_tx {
+            Ok(InitialAndFloorGas { initial_gas: 0, floor_gas: 0 })
+        } else {
+            self.mainnet.validate_initial_tx_gas(evm)
+        };
+
+        // If validation fails, `execution_result` may not run, so we must pop here.
+        if res.is_err() {
+            precompiles::pop_precompile_trace_context();
         }
 
-        self.mainnet.validate_initial_tx_gas(evm)
+        res
     }
 
     fn reward_beneficiary(
@@ -165,7 +206,7 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
         let mut tx_fee = U256::from(gas.spent() - gas.refunded() as u64) * effective_gas_price;
 
         // EIP-4844
-        let is_cancun = SpecId::from(ctx.cfg().spec()).is_enabled_in(SpecId::CANCUN);
+        let is_cancun = SpecId::from(*ctx.cfg().spec()).is_enabled_in(SpecId::CANCUN);
         if is_cancun {
             let data_fee = U256::from(tx.total_blob_gas()) * ctx.blob_gasprice();
             tx_fee = tx_fee.saturating_add(data_fee);
@@ -181,6 +222,15 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
         evm: &mut Self::Evm,
         result: FrameResult,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        // Ensure we always pop the trace context, even on early returns.
+        struct PrecompileTracePopGuard;
+        impl Drop for PrecompileTracePopGuard {
+            fn drop(&mut self) {
+                precompiles::pop_precompile_trace_context();
+            }
+        }
+        let _precompile_trace_pop_guard = PrecompileTracePopGuard;
+
         match core::mem::replace(evm.ctx().error(), Ok(())) {
             Err(ContextError::Db(e)) => return Err(e.into()),
             Err(ContextError::Custom(e)) => return Err(Self::Error::from_string(e)),
@@ -188,9 +238,14 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
         }
 
         // used gas with refund calculated.
-        let gas_refunded =
-            if evm.ctx().tx().is_system_transaction { 0 } else { result.gas().refunded() as u64 };
-        let final_gas_used = result.gas().spent() - gas_refunded;
+        let raw_gas_refunded = result.gas().refunded() as u64;
+        let raw_gas_spent = result.gas().spent();
+        let is_system_tx = {
+            let ctx = evm.ctx_ref();
+            ctx.tx().is_system_transaction
+        };
+        let gas_refunded = if is_system_tx { 0 } else { raw_gas_refunded };
+        let final_gas_used = raw_gas_spent - gas_refunded;
         let output = result.output();
         let instruction_result = result.into_interpreter_result();
 

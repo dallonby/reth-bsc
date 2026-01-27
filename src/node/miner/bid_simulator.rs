@@ -10,7 +10,6 @@ use crate::node::miner::payload::DELAY_LEFT_OVER;
 use crate::node::miner::util::prepare_new_attributes;
 use crate::node::primitives::BscBlobTransactionSidecar;
 use alloy_consensus::BlobTransactionSidecar;
-use alloy_consensus::BlockHeader;
 use alloy_consensus::Transaction;
 use alloy_evm::Evm;
 use alloy_primitives::U256;
@@ -18,16 +17,15 @@ use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
 use reth::payload::EthPayloadBuilderAttributes;
 use reth::transaction_pool::BestTransactionsAttributes;
-use reth_chain_state::ExecutedBlock;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
 use reth_evm::execute::BlockBuilder;
 use reth_evm::execute::BlockBuilderOutcome;
-use reth_evm::execute::ExecutionOutcome;
 use reth_evm::execute::{BlockExecutionError, BlockValidationError};
 use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+use reth_execution_types::BlockExecutionOutput;
 use reth_payload_primitives::PayloadBuilderAttributes;
-use reth_payload_primitives::PayloadBuilderError;
+use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadBuilderError};
 use reth_primitives::SealedHeader;
 use reth_primitives::TransactionSigned;
 use reth_primitives_traits::SignerRecoverable;
@@ -35,6 +33,7 @@ use reth_provider::StateProviderFactory;
 use reth_provider::{BlockHashReader, HeaderProvider};
 use reth_revm::{database::StateProviderDatabase, db::State};
 use revm::context_interface::block::Block;
+use either::Either;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -400,6 +399,7 @@ where
                     gas_limit,
                     parent_beacon_block_root: attributes.parent_beacon_block_root(),
                     withdrawals: Some(attributes.withdrawals().clone()),
+                    extra_data: builder_config.extra_data.clone(),
                 },
             )
             .map_err(PayloadBuilderError::other)
@@ -542,22 +542,21 @@ where
         plain.body.sidecars = Some(bid_runtime.blob_sidecars.clone());
         sealed_block = Arc::new(plain.into());
 
-        bid_runtime.bsc_payload = BscBuiltPayload {
+        let requests = execution_result.requests.clone();
+        let execution_outcome = BlockExecutionOutput { state: db.take_bundle(), result: execution_result };
+        let executed: BuiltPayloadExecutedBlock<_> = BuiltPayloadExecutedBlock {
+            recovered_block: Arc::new(block),
+            execution_output: Arc::new(execution_outcome),
+            hashed_state: Either::Left(Arc::new(hashed_state)),
+            trie_updates: Either::Left(Arc::new(trie_updates)),
+        };
+
+        bid_runtime.bsc_payload = Some(BscBuiltPayload {
             block: sealed_block.clone(),
             fees: bid_runtime.gas_fee,
-            requests: Some(execution_result.requests.clone()),
-            executed_block: ExecutedBlock {
-                recovered_block: Arc::new(block.clone()),
-                execution_output: Arc::new(ExecutionOutcome::new(
-                    db.take_bundle(),
-                    vec![execution_result.receipts.clone()],
-                    sealed_block.header().number(),
-                    vec![execution_result.requests.clone()],
-                )),
-                hashed_state: Arc::new(hashed_state.clone()),
-                trie_updates: Arc::new(trie_updates),
-            },
-        };
+            requests: Some(requests),
+            executed_block: executed,
+        });
 
         // Acquire write lock to update best_bid
         {
@@ -640,7 +639,7 @@ pub struct BidRuntime<Pool, EvmConfig = BscEvmConfig> {
     attributes: EthPayloadBuilderAttributes,
     builder_config: EthereumBuilderConfig,
     chain_spec: Arc<BscChainSpec>,
-    pub bsc_payload: BscBuiltPayload,
+    pub bsc_payload: Option<BscBuiltPayload>,
 
     gas_used: u64,
     gas_fee: U256,
@@ -680,7 +679,7 @@ where
             pool,
             evm_config,
             builder_config: EthereumBuilderConfig::default(),
-            bsc_payload: BscBuiltPayload::default(),
+            bsc_payload: None,
             expected_block_reward: U256::ZERO,
             expected_validator_reward: U256::ZERO,
             packed_block_reward: U256::ZERO,

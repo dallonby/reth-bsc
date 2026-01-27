@@ -223,10 +223,10 @@ where
             header.timestamp(),
             header.number(),
         );
+        let spec_id = SpecId::from(spec);
 
         // configure evm env based on parent block
-        let mut cfg_env =
-            CfgEnv::new().with_chain_id(self.chain_spec().chain().id()).with_spec(spec);
+        let mut cfg_env = CfgEnv::new_with_spec(spec).with_chain_id(self.chain_spec().chain().id());
 
         if let Some(blob_params) = &blob_params {
             cfg_env.set_max_blobs_per_tx(blob_params.max_blobs_per_tx);
@@ -240,7 +240,7 @@ where
                 BlobExcessGasAndPrice { excess_blob_gas, blob_gasprice }
             });
 
-        let eth_spec = SpecId::from(spec);
+        let eth_spec = spec_id;
 
         let block_env = BlockEnv {
             number: U256::from(header.number()),
@@ -276,7 +276,7 @@ where
 
         // configure evm env based on parent block
         let cfg_env =
-            CfgEnv::new().with_chain_id(self.chain_spec().chain().id()).with_spec(spec_id);
+            CfgEnv::new_with_spec(spec_id).with_chain_id(self.chain_spec().chain().id());
 
         let blob_params = self.chain_spec().blob_params_at_timestamp(attributes.timestamp);
 
@@ -339,10 +339,12 @@ where
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         Ok(BscBlockExecutionCtx {
             base: EthBlockExecutionCtx {
+                tx_count_hint: Some(block.transaction_count()),
                 parent_hash: block.header().parent_hash,
                 parent_beacon_block_root: block.header().parent_beacon_block_root,
                 ommers: &block.body().ommers,
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                extra_data: block.header().extra_data.clone(),
             },
             header: Some(block.header().clone()),
             is_miner: false,
@@ -357,10 +359,12 @@ where
         tracing::trace!("Try to create next block ctx for miner, next_block_numer={}, parent_hash={}", parent.number+1, parent.hash());
         Ok(BscBlockExecutionCtx {
             base: EthBlockExecutionCtx {
+                tx_count_hint: None,
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
                 withdrawals: attributes.withdrawals.map(Cow::Owned),
+                extra_data: attributes.extra_data,
             },
             header: None, // No header available for next block context
             is_miner: true,
@@ -417,10 +421,12 @@ where
         let block = &payload.0;
         Ok(BscBlockExecutionCtx {
             base: EthBlockExecutionCtx {
+                tx_count_hint: Some(block.body.inner.transactions.len()),
                 parent_hash: block.header.parent_hash(),
                 parent_beacon_block_root: block.header.parent_beacon_block_root,
                 ommers: &block.body.inner.ommers,
                 withdrawals: block.body.inner.withdrawals.as_ref().map(Cow::Borrowed),
+                extra_data: block.header.extra_data.clone(),
             },
             header: Some(block.header.clone()),
             is_miner: false,
@@ -431,7 +437,8 @@ where
         &self,
         payload: &BscExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
-        Ok(payload.0.body.inner.transactions.clone().into_iter().map(|tx| tx.try_into_recovered()))
+        let txs = payload.0.body.inner.transactions.clone();
+        Ok((txs, |tx: TransactionSigned| tx.try_into_recovered()))
     }
 }
 

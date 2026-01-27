@@ -190,7 +190,7 @@ where
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
 
-        reth_tracing::tracing::info!(target: "bsc::txpool", "Transaction pool with blacklist validation initialized");
+        tracing::info!(target: "bsc::txpool", "Transaction pool with blacklist validation initialized");
         Ok(transaction_pool)
     }
 }

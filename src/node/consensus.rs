@@ -20,7 +20,7 @@ use reth::{
     api::FullNodeTypes,
     beacon_consensus::EthBeaconConsensus,
     builder::{components::ConsensusBuilder, BuilderContext},
-    consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator},
+    consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom},
     consensus_common::validation::{
         validate_against_parent_4844, validate_against_parent_hash_number,
     },
@@ -44,7 +44,7 @@ impl<Node> ConsensusBuilder<Node> for BscConsensusBuilder
 where
     Node: FullNodeTypes<Types = BscNode>,
 {
-    type Consensus = Arc<dyn FullConsensus<BscPrimitives, Error = ConsensusError>>;
+    type Consensus = Arc<dyn FullConsensus<BscPrimitives>>;
 
     /// return a parlia consensus instance, automatically called by the ComponentsBuilder framework.
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
@@ -153,8 +153,6 @@ impl<ChainSpec: EthChainSpec + BscHardforks + 'static> HeaderValidator<Header>
 impl<ChainSpec: EthChainSpec<Header = Header> + BscHardforks + 'static> Consensus<BscBlock>
     for BscConsensus<ChainSpec>
 {
-    type Error = ConsensusError;
-
     /// live-sync validation.
     fn validate_body_against_header(
         &self,
@@ -184,6 +182,7 @@ impl<ChainSpec: EthChainSpec<Header = Header> + BscHardforks + 'static> FullCons
         &self,
         block: &RecoveredBlock<BscBlock>,
         result: &BlockExecutionResult<Receipt>,
+        _receipt_root_bloom: Option<ReceiptRootBloom>,
     ) -> Result<(), ConsensusError> {
         let receipts = &result.receipts;
         let requests = &result.requests;
@@ -342,7 +341,7 @@ pub struct BscForkChoiceEngine<P> {
 
 impl<P> BscForkChoiceEngine<P>
 where
-    P: BlockNumReader + HeaderProvider<Header = Header> + Clone,
+    P: BlockNumReader + HeaderProvider<Header = Header> + Clone + Send + Sync,
 {
     /// Creates a new `BscForkChoiceEngine` instance.
     pub fn new(

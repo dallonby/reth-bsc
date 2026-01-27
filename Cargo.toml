@@ -13,61 +13,63 @@ name = "reth-bsc"
 path = "src/main.rs"
 
 [dependencies]
-reth = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-cli = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-cli-commands = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-basic-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-db = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-engine-local = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-chainspec = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-cli-util = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-discv4 = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup", features = [
+reth = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-cli = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-cli-commands = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-basic-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-db = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-engine-local = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-chainspec = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-cli-util = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-discv4 = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "test-utils",
 ] }
-reth-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-ethereum-forks = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup", features = [
+reth-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-ethereum-forks = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "serde",
 ] }
-reth-ethereum-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-payload-builder-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-chain-state = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-ethereum-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-eth-wire = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-eth-wire-types = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-evm = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-evm-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-ipc = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-metrics = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-node-core = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-revm = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-network = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup", features = [
+reth-ethereum-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-payload-builder-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-chain-state = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-ethereum-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-eth-wire = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-eth-wire-types = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-evm = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-evm-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-execution-types = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-ipc = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-metrics = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-node-core = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-revm = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-network = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "test-utils",
 ] }
-reth-network-p2p = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-network-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-node-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup", features = [
+reth-network-p2p = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-network-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-node-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "test-utils",
 ] }
-reth-network-peers = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-payload-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-ethereum-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-primitives-traits = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-provider = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup", features = [
+reth-network-peers = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-payload-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-ethereum-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-primitives-traits = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-provider = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "test-utils",
 ] }
-reth-rpc-eth-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-rpc-convert = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-rpc-engine-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-tracing = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-trie-common = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-trie-db = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-tasks = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-reth-transaction-pool = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.9.3-cleanup" }
-revm = "31.0.2"
+reth-rpc-eth-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-rpc-convert = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-rpc-engine-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-trie-common = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-trie-db = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-tasks = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-transaction-pool = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+revm = "34.0.0"
+revm-context-interface = "14.0.0"
+revm-database = "10.0.0"
 
 # alloy dependencies
-alloy-evm = "0.23.3"
+alloy-evm = "0.26.3"
 
 alloy-genesis = "1.1.3"
 alloy-consensus = "1.1.3"
@@ -105,6 +107,7 @@ cfg-if = { version = "1.0", default-features = false }
 derive_more = "0.99"
 eyre = "0.6"
 futures = "0.3"
+either = "1"
 hex = "0.4"
 lazy_static = "1.4.0"
 lru = "0.12"
