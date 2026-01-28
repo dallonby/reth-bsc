@@ -500,6 +500,21 @@ where
     ) -> Result<bool, ParliaConsensusErr> {
         let (incoming_td, current_td) =
             self.header_td_fcu(&self.engine_handle, incoming_header, current_header).await?;
+
+        // Ensure monotonic TD when incoming is a direct child of current.
+        let incoming_td = if incoming_header.parent_hash == current_header.hash_slow() {
+            if let (Some(in_td), Some(cur_td)) = (incoming_td, current_td) {
+                if in_td <= cur_td {
+                    Some(cur_td + incoming_header.difficulty)
+                } else {
+                    Some(in_td)
+                }
+            } else {
+                incoming_td
+            }
+        } else {
+            incoming_td
+        };
         let incoming_justified_num =
             self.get_justified_number_and_hash(incoming_header).map(|(num, _)| num).unwrap_or(0);
         let current_justified_num =
