@@ -194,6 +194,11 @@ fn add_hardforks_to_chainspec(
     if let Some(prague_time) = config.get("pragueTime").and_then(|v| v.as_u64()) {
         chain_spec = chain_spec.with_fork(EthereumHardfork::Prague, ForkCondition::Timestamp(prague_time));
     }
+
+    if let Some(osaka_time) = config.get("osakaTime").and_then(|v| v.as_u64()) {
+        chain_spec = chain_spec.with_fork(EthereumHardfork::Osaka, ForkCondition::Timestamp(osaka_time));
+        chain_spec = chain_spec.with_fork(BscHardfork::Osaka, ForkCondition::Timestamp(osaka_time));
+    }
     
     if let Some(pascal_time) = config.get("pascalTime").and_then(|v| v.as_u64()) {
         chain_spec = chain_spec.with_fork(BscHardfork::Pascal, ForkCondition::Timestamp(pascal_time));
@@ -209,6 +214,10 @@ fn add_hardforks_to_chainspec(
     
     if let Some(fermi_time) = config.get("fermiTime").and_then(|v| v.as_u64()) {
         chain_spec = chain_spec.with_fork(BscHardfork::Fermi, ForkCondition::Timestamp(fermi_time));
+    }
+
+    if let Some(mendel_time) = config.get("mendelTime").and_then(|v| v.as_u64()) {
+        chain_spec = chain_spec.with_fork(BscHardfork::Mendel, ForkCondition::Timestamp(mendel_time));
     }
     
     Ok(chain_spec)

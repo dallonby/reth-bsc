@@ -171,6 +171,8 @@ where
         let blob_store = create_blob_store_with_cache(ctx, blob_cache_size)?;
 
         // Build default Ethereum validator executor
+        // BSC rejected EIP-7594 (PeerDAS), so we disable EIP-7594 sidecar support to always
+        // use v0 (legacy) blob sidecars and reject v1 (EIP-7594) sidecars.
         let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
             .with_head_timestamp(ctx.head().timestamp)
             .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
@@ -180,6 +182,7 @@ where
             .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
             .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
             .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
+            .no_eip7594()
             .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
 
         // Inject blacklist wrapper

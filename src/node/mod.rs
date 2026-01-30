@@ -13,13 +13,19 @@ use evm::BscExecutorBuilder;
 use network::BscNetworkBuilder;
 use reth::{
     api::{FullNodeComponents, FullNodeTypes, NodeTypes},
-    builder::{components::ComponentsBuilder, rpc::RpcAddOns, DebugNode, Node, NodeAdapter},
+    builder::{
+        components::ComponentsBuilder,
+        rpc::{EthApiBuilder, RpcAddOns, RpcContext},
+        DebugNode, Node, NodeAdapter,
+    },
 };
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_engine_primitives::ConsensusEngineHandle;
 use reth_node_ethereum::EthereumEthApiBuilder;
 use reth_payload_primitives::{PayloadAttributesBuilder, PayloadTypes};
 use reth_primitives::BlockBody;
+use reth_rpc_eth_api::helpers::config::{EthConfigApiServer, EthConfigHandler};
+use reth_rpc_server_types::RethRpcModule;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
@@ -117,7 +123,17 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        BscNodeAddOns::default()
+        BscNodeAddOns::default().extend_rpc_modules(
+            |ctx: RpcContext<'_, NodeAdapter<N>, <EthereumEthApiBuilder as EthApiBuilder<NodeAdapter<N>>>::EthApi>| {
+                let eth_config = EthConfigHandler::new(
+                    ctx.node().provider().clone(),
+                    ctx.node().evm_config().clone(),
+                );
+            ctx.modules
+                .merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
+            Ok(())
+            },
+        )
     }
 }
 

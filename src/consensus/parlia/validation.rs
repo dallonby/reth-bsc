@@ -1,15 +1,18 @@
-use reth::consensus::{HeaderValidator, ConsensusError, Consensus};
+use reth::consensus::{Consensus, ConsensusError, HeaderValidator, TxGasLimitTooHighErr};
 use reth::primitives::SealedHeader;
 use reth_chainspec::{EthChainSpec, EthereumHardforks, EthereumHardfork};
 use crate::consensus::parlia::util::calculate_millisecond_timestamp;
 use crate::hardforks::BscHardforks;
+use crate::consensus::eip4844::is_blob_eligible_block;
 use super::Parlia;
-use alloy_consensus::{Header, EMPTY_OMMER_ROOT_HASH};
+use alloy_consensus::{Header, Transaction, EMPTY_OMMER_ROOT_HASH};
 use alloy_primitives::B256;
 use reth_primitives::GotExpected;
 use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, MAX_DATA_GAS_PER_BLOCK_DENCUN};
 use crate::BscBlock;
-use reth_primitives_traits::Block;
+use reth_primitives_traits::{constants::MAX_TX_GAS_LIMIT_OSAKA, Block};
+
+const MAX_RLP_BLOCK_SIZE_OSAKA: usize = 8 * 1024 * 1024;
 
 
 pub const fn validate_header_gas(header: &Header) -> Result<(), ConsensusError> {
@@ -38,9 +41,22 @@ pub fn validate_header_base_fee<ChainSpec: EthereumHardforks>(
 
 /// Validate the 4844 header of BSC block.
 /// Compared to Ethereum, BSC block doesn't have `parent_beacon_block_root`.
-pub fn validate_4844_header_of_bsc(header: &SealedHeader) -> Result<(), ConsensusError> {
+pub fn validate_4844_header_of_bsc<ChainSpec: BscHardforks>(
+    header: &SealedHeader,
+    chain_spec: &ChainSpec,
+) -> Result<(), ConsensusError> {
     let blob_gas_used = header.blob_gas_used.ok_or(ConsensusError::BlobGasUsedMissing)?;
     let excess_blob_gas = header.excess_blob_gas.ok_or(ConsensusError::ExcessBlobGasMissing)?;
+
+    // BEP-657: After Mendel, non-eligible blocks must have blob_gas_used == 0
+    if !is_blob_eligible_block(chain_spec, header.number, header.timestamp) && blob_gas_used != 0 {
+        return Err(ConsensusError::Other(format!(
+            "blob transactions not allowed in block {} (N % {} != 0)",
+            header.number,
+            crate::consensus::eip4844::BLOB_ELIGIBLE_BLOCK_INTERVAL
+        )));
+    }
+
     if blob_gas_used > MAX_DATA_GAS_PER_BLOCK_DENCUN {
         return Err(ConsensusError::BlobGasUsedExceedsMaxBlobGasPerBlock {
             blob_gas_used,
@@ -94,7 +110,7 @@ impl<ChainSpec: EthChainSpec + BscHardforks + std::fmt::Debug + Send + Sync + 's
 
         // Ensures that EIP-4844 fields are valid once cancun is active.
         if BscHardforks::is_cancun_active_at_timestamp(&*self.spec, header.number, header.timestamp) {
-            validate_4844_header_of_bsc(header)?;
+            validate_4844_header_of_bsc(header, &*self.spec)?;
         } else if header.blob_gas_used.is_some() {
             return Err(ConsensusError::BlobGasUsedUnexpected)
         } else if header.excess_blob_gas.is_some() {
@@ -144,13 +160,45 @@ impl<ChainSpec: EthChainSpec + BscHardforks + std::fmt::Debug + Send + Sync + 's
             return Err(ConsensusError::BodyTransactionRootDiff(error.into()));
         }
 
+        if BscHardforks::is_osaka_active_at_timestamp(&*self.spec, block.number, block.timestamp) {
+            let rlp_length = BscBlock::rlp_length(block.header(), block.body());
+            if rlp_length > MAX_RLP_BLOCK_SIZE_OSAKA {
+                return Err(ConsensusError::BlockTooLarge {
+                    rlp_length,
+                    max_rlp_length: MAX_RLP_BLOCK_SIZE_OSAKA,
+                });
+            }
+
+            for tx in block.body().transactions() {
+                if tx.gas_limit() > MAX_TX_GAS_LIMIT_OSAKA {
+                    return Err(TxGasLimitTooHighErr {
+                        tx_hash: *tx.hash(),
+                        gas_limit: tx.gas_limit(),
+                        max_allowed: MAX_TX_GAS_LIMIT_OSAKA,
+                    }
+                    .into());
+                }
+            }
+        }
+
         // EIP-4844: Shard Blob Transactions
         if BscHardforks::is_cancun_active_at_timestamp(&*self.spec, block.number, block.timestamp) {
+            if !is_blob_eligible_block(&*self.spec, block.number, block.timestamp)
+                && block.body().transactions().any(|tx| tx.is_eip4844())
+            {
+                return Err(ConsensusError::Other(
+                    "blob transactions not allowed in this block".to_string(),
+                ));
+            }
             // Check that the blob gas used in the header matches the sum of the blob gas used by
             // each blob tx
             let header_blob_gas_used =
                 block.blob_gas_used.ok_or(ConsensusError::BlobGasUsedMissing)?;
-            let total_blob_gas = block.blob_gas_used.ok_or(ConsensusError::BlobGasUsedMissing)?;
+            let total_blob_gas: u64 = block
+                .body()
+                .transactions()
+                .map(|tx| tx.blob_gas_used().unwrap_or(0))
+                .sum();
             if total_blob_gas != header_blob_gas_used {
                 return Err(ConsensusError::BlobGasUsedDiff(GotExpected {
                     got: header_blob_gas_used,

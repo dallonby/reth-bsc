@@ -1,8 +1,10 @@
 use crate::{
     chainspec::BscChainSpec,
     consensus::{
+        eip4844::should_recalculate_excess_blob_gas,
         parlia::{
             provider::EnhancedDbSnapshotProvider, util::calculate_millisecond_timestamp,
+            vote_pool,
             BscForkChoiceRule, HeaderForForkchoice, Parlia,
         },
         ParliaConsensusErr,
@@ -133,7 +135,26 @@ impl<ChainSpec: EthChainSpec + BscHardforks + 'static> HeaderValidator<Header>
             header.header().timestamp,
         ) {
             if let Some(blob_params) = self.chain_spec.blob_params_at_timestamp(header.timestamp) {
-                if let Err(err) =
+                if self.chain_spec.is_mendel_active_at_timestamp(header.number, header.timestamp)
+                    && !should_recalculate_excess_blob_gas(
+                        &*self.chain_spec,
+                        header.number,
+                        header.timestamp,
+                    )
+                {
+                    let expected = parent.header().excess_blob_gas.unwrap_or(0);
+                    let got = header
+                        .header()
+                        .excess_blob_gas
+                        .ok_or(ConsensusError::ExcessBlobGasMissing)?;
+                    if got != expected {
+                        return Err(ConsensusError::ExcessBlobGasDiff {
+                            diff: GotExpected { got, expected },
+                            parent_excess_blob_gas: expected,
+                            parent_blob_gas_used: parent.header().blob_gas_used.unwrap_or(0),
+                        });
+                    }
+                } else if let Err(err) =
                     validate_against_parent_4844(header.header(), parent.header(), blob_params)
                 {
                     tracing::warn!(
@@ -231,6 +252,595 @@ impl<ChainSpec: EthChainSpec<Header = Header> + BscHardforks + 'static> FullCons
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consensus::parlia::{
+        provider::SnapshotProvider, vote_pool, Snapshot, VoteAddress, VoteData, VoteEnvelope,
+        VoteSignature,
+    };
+    use crate::hardforks::bsc::BscHardfork;
+    use alloy_consensus::Header;
+    use alloy_primitives::{Address, B256};
+    use reth_chainspec::{ChainInfo, ChainSpecBuilder, ForkCondition};
+    use reth_engine_primitives::BeaconEngineMessage;
+    use reth_provider::{BlockHashReader, BlockNumReader, HeaderProvider};
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+    use tokio::sync::mpsc;
+
+    #[derive(Clone, Default)]
+    struct TestProvider;
+
+    impl BlockHashReader for TestProvider {
+        fn block_hash(&self, _number: u64) -> reth_provider::ProviderResult<Option<B256>> {
+            Ok(None)
+        }
+
+        fn canonical_hashes_range(
+            &self,
+            _start: u64,
+            _end: u64,
+        ) -> reth_provider::ProviderResult<Vec<B256>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl BlockNumReader for TestProvider {
+        fn chain_info(&self) -> reth_provider::ProviderResult<ChainInfo> {
+            Ok(ChainInfo::default())
+        }
+
+        fn best_block_number(&self) -> reth_provider::ProviderResult<u64> {
+            Ok(0)
+        }
+
+        fn last_block_number(&self) -> reth_provider::ProviderResult<u64> {
+            Ok(0)
+        }
+
+        fn block_number(&self, _hash: B256) -> reth_provider::ProviderResult<Option<u64>> {
+            Ok(None)
+        }
+    }
+
+    impl HeaderProvider for TestProvider {
+        type Header = Header;
+
+        fn header(&self, _block_hash: B256) -> reth_provider::ProviderResult<Option<Self::Header>> {
+            Ok(None)
+        }
+
+        fn header_by_number(&self, _num: u64) -> reth_provider::ProviderResult<Option<Self::Header>> {
+            Ok(None)
+        }
+
+        fn headers_range(
+            &self,
+            _range: impl core::ops::RangeBounds<u64>,
+        ) -> reth_provider::ProviderResult<Vec<Self::Header>> {
+            Ok(Vec::new())
+        }
+
+        fn sealed_header(
+            &self,
+            _number: u64,
+        ) -> reth_provider::ProviderResult<Option<reth_primitives::SealedHeader<Self::Header>>> {
+            Ok(None)
+        }
+
+        fn sealed_headers_while(
+            &self,
+            _range: impl core::ops::RangeBounds<u64>,
+            _predicate: impl FnMut(&reth_primitives::SealedHeader<Self::Header>) -> bool,
+        ) -> reth_provider::ProviderResult<Vec<reth_primitives::SealedHeader<Self::Header>>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct TestSnapshotProvider {
+        snaps: RwLock<HashMap<B256, Snapshot>>,
+    }
+
+    impl SnapshotProvider for TestSnapshotProvider {
+        fn snapshot_by_hash(&self, block_hash: &B256) -> Option<Snapshot> {
+            self.snaps.read().ok().and_then(|m| m.get(block_hash).cloned())
+        }
+
+        fn insert(&self, snapshot: Snapshot) {
+            if let Ok(mut m) = self.snaps.write() {
+                m.insert(snapshot.block_hash, snapshot);
+            }
+        }
+    }
+
+    #[test]
+    fn finalized_uses_vote_pool_quorum_for_head_child() {
+        vote_pool::drain();
+
+        let chain_spec = Arc::new(BscChainSpec::from(
+            ChainSpecBuilder::mainnet()
+                .with_fork(BscHardfork::Plato, ForkCondition::Block(0))
+                .build(),
+        ));
+
+        let (tx, _rx) =
+            mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
+        let engine = BscForkChoiceEngine::new(
+            TestProvider::default(),
+            ConsensusEngineHandle::new(tx),
+            chain_spec,
+        );
+
+        let mut parent = Header::default();
+        parent.number = 9;
+        parent.timestamp = 1;
+        let parent_hash = parent.hash_slow();
+
+        let mut head = Header::default();
+        head.number = 10;
+        head.timestamp = 2;
+        head.parent_hash = parent_hash;
+        let head_hash = head.hash_slow();
+
+        let fallback_hash = B256::from([7u8; 32]);
+        let validators = vec![
+            Address::from([1u8; 20]),
+            Address::from([2u8; 20]),
+            Address::from([3u8; 20]),
+        ];
+        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        snap.vote_data = VoteData {
+            source_number: 7,
+            source_hash: fallback_hash,
+            target_number: 9,
+            target_hash: parent_hash,
+        };
+
+        let provider: Arc<dyn SnapshotProvider + Send + Sync> =
+            if let Some(existing) = crate::shared::get_snapshot_provider() {
+                existing.clone()
+            } else {
+                let p: Arc<dyn SnapshotProvider + Send + Sync> =
+                    Arc::new(TestSnapshotProvider::default());
+                let _ = crate::shared::set_snapshot_provider(p.clone());
+                p
+            };
+        provider.insert(snap);
+
+        let baseline = engine.get_finalized_number_and_hash(&head).unwrap();
+        assert_eq!(baseline, (7, fallback_hash));
+
+        let vote_data = VoteData {
+            source_number: 9,
+            source_hash: parent_hash,
+            target_number: 10,
+            target_hash: head_hash,
+        };
+        let vote1 = VoteEnvelope {
+            vote_address: VoteAddress::from([1u8; 48]),
+            signature: VoteSignature::default(),
+            data: vote_data,
+        };
+        let vote2 = VoteEnvelope {
+            vote_address: VoteAddress::from([2u8; 48]),
+            signature: VoteSignature::default(),
+            data: vote_data,
+        };
+
+        vote_pool::put_vote(vote1);
+        vote_pool::put_vote(vote2);
+
+        let finalized = engine.get_finalized_number_and_hash(&head).unwrap();
+        assert_eq!(finalized, (9, parent_hash));
+
+        vote_pool::drain();
+    }
+
+    #[test]
+    fn finalized_requires_quorum_not_reached_with_one_vote() {
+        // With 3 validators, quorum is ceil(3 * 2 / 3) = 2
+        // Only 1 vote should NOT advance finality
+        vote_pool::drain();
+
+        let chain_spec = Arc::new(BscChainSpec::from(
+            ChainSpecBuilder::mainnet()
+                .with_fork(BscHardfork::Plato, ForkCondition::Block(0))
+                .build(),
+        ));
+
+        let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
+        let engine = BscForkChoiceEngine::new(
+            TestProvider::default(),
+            ConsensusEngineHandle::new(tx),
+            chain_spec,
+        );
+
+        let mut parent = Header::default();
+        parent.number = 9;
+        parent.timestamp = 1;
+        let parent_hash = parent.hash_slow();
+
+        let mut head = Header::default();
+        head.number = 10;
+        head.timestamp = 2;
+        head.parent_hash = parent_hash;
+        let head_hash = head.hash_slow();
+
+        let fallback_hash = B256::from([7u8; 32]);
+        let validators = vec![
+            Address::from([1u8; 20]),
+            Address::from([2u8; 20]),
+            Address::from([3u8; 20]),
+        ];
+        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        snap.vote_data = VoteData {
+            source_number: 7,
+            source_hash: fallback_hash,
+            target_number: 9,
+            target_hash: parent_hash,
+        };
+
+        let provider: Arc<dyn SnapshotProvider + Send + Sync> =
+            if let Some(existing) = crate::shared::get_snapshot_provider() {
+                existing.clone()
+            } else {
+                let p: Arc<dyn SnapshotProvider + Send + Sync> =
+                    Arc::new(TestSnapshotProvider::default());
+                let _ = crate::shared::set_snapshot_provider(p.clone());
+                p
+            };
+        provider.insert(snap);
+
+        // Add only ONE vote (quorum requires 2)
+        let vote_data = VoteData {
+            source_number: 9,
+            source_hash: parent_hash,
+            target_number: 10,
+            target_hash: head_hash,
+        };
+        let vote1 = VoteEnvelope {
+            vote_address: VoteAddress::from([1u8; 48]),
+            signature: VoteSignature::default(),
+            data: vote_data,
+        };
+        vote_pool::put_vote(vote1);
+
+        // Finality should NOT advance - still returns fallback
+        let finalized = engine.get_finalized_number_and_hash(&head).unwrap();
+        assert_eq!(finalized, (7, fallback_hash), "1 vote should not reach quorum of 2");
+
+        vote_pool::drain();
+    }
+
+    #[test]
+    fn finalized_ignores_votes_with_wrong_source_number() {
+        vote_pool::drain();
+
+        let chain_spec = Arc::new(BscChainSpec::from(
+            ChainSpecBuilder::mainnet()
+                .with_fork(BscHardfork::Plato, ForkCondition::Block(0))
+                .build(),
+        ));
+
+        let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
+        let engine = BscForkChoiceEngine::new(
+            TestProvider::default(),
+            ConsensusEngineHandle::new(tx),
+            chain_spec,
+        );
+
+        let mut parent = Header::default();
+        parent.number = 9;
+        parent.timestamp = 1;
+        let parent_hash = parent.hash_slow();
+
+        let mut head = Header::default();
+        head.number = 10;
+        head.timestamp = 2;
+        head.parent_hash = parent_hash;
+        let head_hash = head.hash_slow();
+
+        let fallback_hash = B256::from([7u8; 32]);
+        let validators = vec![
+            Address::from([1u8; 20]),
+            Address::from([2u8; 20]),
+            Address::from([3u8; 20]),
+        ];
+        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        snap.vote_data = VoteData {
+            source_number: 7,
+            source_hash: fallback_hash,
+            target_number: 9,
+            target_hash: parent_hash,
+        };
+
+        let provider: Arc<dyn SnapshotProvider + Send + Sync> =
+            if let Some(existing) = crate::shared::get_snapshot_provider() {
+                existing.clone()
+            } else {
+                let p: Arc<dyn SnapshotProvider + Send + Sync> =
+                    Arc::new(TestSnapshotProvider::default());
+                let _ = crate::shared::set_snapshot_provider(p.clone());
+                p
+            };
+        provider.insert(snap);
+
+        // Add votes with WRONG source_number (8 instead of 9)
+        let wrong_vote_data = VoteData {
+            source_number: 8, // Wrong! Should be 9 (current_justified_number)
+            source_hash: parent_hash,
+            target_number: 10,
+            target_hash: head_hash,
+        };
+        let vote1 = VoteEnvelope {
+            vote_address: VoteAddress::from([1u8; 48]),
+            signature: VoteSignature::default(),
+            data: wrong_vote_data,
+        };
+        let vote2 = VoteEnvelope {
+            vote_address: VoteAddress::from([2u8; 48]),
+            signature: VoteSignature::default(),
+            data: wrong_vote_data,
+        };
+        vote_pool::put_vote(vote1);
+        vote_pool::put_vote(vote2);
+
+        // Finality should NOT advance - votes have wrong source
+        let finalized = engine.get_finalized_number_and_hash(&head).unwrap();
+        assert_eq!(finalized, (7, fallback_hash), "votes with wrong source should be ignored");
+
+        vote_pool::drain();
+    }
+
+    #[test]
+    fn finalized_ignores_votes_with_wrong_target_number() {
+        vote_pool::drain();
+
+        let chain_spec = Arc::new(BscChainSpec::from(
+            ChainSpecBuilder::mainnet()
+                .with_fork(BscHardfork::Plato, ForkCondition::Block(0))
+                .build(),
+        ));
+
+        let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
+        let engine = BscForkChoiceEngine::new(
+            TestProvider::default(),
+            ConsensusEngineHandle::new(tx),
+            chain_spec,
+        );
+
+        let mut parent = Header::default();
+        parent.number = 9;
+        parent.timestamp = 1;
+        let parent_hash = parent.hash_slow();
+
+        let mut head = Header::default();
+        head.number = 10;
+        head.timestamp = 2;
+        head.parent_hash = parent_hash;
+        let head_hash = head.hash_slow();
+
+        let fallback_hash = B256::from([7u8; 32]);
+        let validators = vec![
+            Address::from([1u8; 20]),
+            Address::from([2u8; 20]),
+            Address::from([3u8; 20]),
+        ];
+        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        snap.vote_data = VoteData {
+            source_number: 7,
+            source_hash: fallback_hash,
+            target_number: 9,
+            target_hash: parent_hash,
+        };
+
+        let provider: Arc<dyn SnapshotProvider + Send + Sync> =
+            if let Some(existing) = crate::shared::get_snapshot_provider() {
+                existing.clone()
+            } else {
+                let p: Arc<dyn SnapshotProvider + Send + Sync> =
+                    Arc::new(TestSnapshotProvider::default());
+                let _ = crate::shared::set_snapshot_provider(p.clone());
+                p
+            };
+        provider.insert(snap);
+
+        // Add votes with WRONG target_number (11 instead of 10)
+        let wrong_vote_data = VoteData {
+            source_number: 9,
+            source_hash: parent_hash,
+            target_number: 11, // Wrong! Should be 10 (head.number)
+            target_hash: head_hash,
+        };
+        let vote1 = VoteEnvelope {
+            vote_address: VoteAddress::from([1u8; 48]),
+            signature: VoteSignature::default(),
+            data: wrong_vote_data,
+        };
+        let vote2 = VoteEnvelope {
+            vote_address: VoteAddress::from([2u8; 48]),
+            signature: VoteSignature::default(),
+            data: wrong_vote_data,
+        };
+        vote_pool::put_vote(vote1);
+        vote_pool::put_vote(vote2);
+
+        // Finality should NOT advance - votes have wrong target
+        let finalized = engine.get_finalized_number_and_hash(&head).unwrap();
+        assert_eq!(finalized, (7, fallback_hash), "votes with wrong target should be ignored");
+
+        vote_pool::drain();
+    }
+
+    #[test]
+    fn finalized_no_advance_when_head_not_direct_child_of_justified() {
+        // BEP-648 requires head.number - 1 == current_justified_number
+        // If there's a gap, finality should not advance via vote pool
+        vote_pool::drain();
+
+        let chain_spec = Arc::new(BscChainSpec::from(
+            ChainSpecBuilder::mainnet()
+                .with_fork(BscHardfork::Plato, ForkCondition::Block(0))
+                .build(),
+        ));
+
+        let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
+        let engine = BscForkChoiceEngine::new(
+            TestProvider::default(),
+            ConsensusEngineHandle::new(tx),
+            chain_spec,
+        );
+
+        let mut head = Header::default();
+        head.number = 12; // Head is at 12
+        head.timestamp = 2;
+        let head_hash = head.hash_slow();
+
+        let fallback_hash = B256::from([7u8; 32]);
+        let validators = vec![
+            Address::from([1u8; 20]),
+            Address::from([2u8; 20]),
+            Address::from([3u8; 20]),
+        ];
+        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        snap.vote_data = VoteData {
+            source_number: 7,
+            source_hash: fallback_hash,
+            target_number: 9, // Justified is at 9, but head is at 12 (gap of 2)
+            target_hash: B256::from([9u8; 32]),
+        };
+
+        let provider: Arc<dyn SnapshotProvider + Send + Sync> =
+            if let Some(existing) = crate::shared::get_snapshot_provider() {
+                existing.clone()
+            } else {
+                let p: Arc<dyn SnapshotProvider + Send + Sync> =
+                    Arc::new(TestSnapshotProvider::default());
+                let _ = crate::shared::set_snapshot_provider(p.clone());
+                p
+            };
+        provider.insert(snap);
+
+        // Add valid votes for head
+        let vote_data = VoteData {
+            source_number: 9,
+            source_hash: B256::from([9u8; 32]),
+            target_number: 12,
+            target_hash: head_hash,
+        };
+        let vote1 = VoteEnvelope {
+            vote_address: VoteAddress::from([1u8; 48]),
+            signature: VoteSignature::default(),
+            data: vote_data,
+        };
+        let vote2 = VoteEnvelope {
+            vote_address: VoteAddress::from([2u8; 48]),
+            signature: VoteSignature::default(),
+            data: vote_data,
+        };
+        vote_pool::put_vote(vote1);
+        vote_pool::put_vote(vote2);
+
+        // Finality should NOT advance because head.number - 1 (11) != current_justified_number (9)
+        let finalized = engine.get_finalized_number_and_hash(&head).unwrap();
+        assert_eq!(finalized, (7, fallback_hash), "should not advance when head is not direct child");
+
+        vote_pool::drain();
+    }
+
+    #[test]
+    fn finalized_with_larger_validator_set() {
+        // Test with 21 validators (typical BSC validator set)
+        // Quorum = ceil(21 * 2 / 3) = 14
+        vote_pool::drain();
+
+        let chain_spec = Arc::new(BscChainSpec::from(
+            ChainSpecBuilder::mainnet()
+                .with_fork(BscHardfork::Plato, ForkCondition::Block(0))
+                .build(),
+        ));
+
+        let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
+        let engine = BscForkChoiceEngine::new(
+            TestProvider::default(),
+            ConsensusEngineHandle::new(tx),
+            chain_spec,
+        );
+
+        let mut parent = Header::default();
+        parent.number = 99;
+        parent.timestamp = 1;
+        let parent_hash = parent.hash_slow();
+
+        let mut head = Header::default();
+        head.number = 100;
+        head.timestamp = 2;
+        head.parent_hash = parent_hash;
+        let head_hash = head.hash_slow();
+
+        let fallback_hash = B256::from([7u8; 32]);
+
+        // 21 validators
+        let validators: Vec<Address> = (1..=21)
+            .map(|i| Address::from([i as u8; 20]))
+            .collect();
+
+        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        snap.vote_data = VoteData {
+            source_number: 97,
+            source_hash: fallback_hash,
+            target_number: 99,
+            target_hash: parent_hash,
+        };
+
+        let provider: Arc<dyn SnapshotProvider + Send + Sync> =
+            if let Some(existing) = crate::shared::get_snapshot_provider() {
+                existing.clone()
+            } else {
+                let p: Arc<dyn SnapshotProvider + Send + Sync> =
+                    Arc::new(TestSnapshotProvider::default());
+                let _ = crate::shared::set_snapshot_provider(p.clone());
+                p
+            };
+        provider.insert(snap);
+
+        let vote_data = VoteData {
+            source_number: 99,
+            source_hash: parent_hash,
+            target_number: 100,
+            target_hash: head_hash,
+        };
+
+        // Add 13 votes (not enough, quorum is 14)
+        for i in 1..=13 {
+            let vote = VoteEnvelope {
+                vote_address: VoteAddress::from([i as u8; 48]),
+                signature: VoteSignature::default(),
+                data: vote_data,
+            };
+            vote_pool::put_vote(vote);
+        }
+
+        let finalized = engine.get_finalized_number_and_hash(&head).unwrap();
+        assert_eq!(finalized, (97, fallback_hash), "13 votes should not reach quorum of 14");
+
+        // Add 14th vote to reach quorum
+        let vote14 = VoteEnvelope {
+            vote_address: VoteAddress::from([14u8; 48]),
+            signature: VoteSignature::default(),
+            data: vote_data,
+        };
+        vote_pool::put_vote(vote14);
+
+        let finalized = engine.get_finalized_number_and_hash(&head).unwrap();
+        assert_eq!(finalized, (99, parent_hash), "14 votes should reach quorum");
+
+        vote_pool::drain();
     }
 }
 
@@ -558,7 +1168,28 @@ where
         let sp = shared::get_snapshot_provider()?;
 
         match sp.snapshot_by_hash(&header.hash_slow()) {
-            Some(snap) => Some((snap.vote_data.source_number, snap.vote_data.source_hash)),
+            Some(snap) => {
+                let current_justified_number = snap.vote_data.target_number;
+                let current_justified_hash = snap.vote_data.target_hash;
+
+                if header.number > 0 && header.number - 1 == current_justified_number
+                    && !snap.validators.is_empty()
+                {
+                    let quorum = usize::div_ceil(snap.validators.len() * 2, 3);
+                    let eligible_votes = vote_pool::fetch_vote_by_block_hash(header.hash_slow())
+                        .into_iter()
+                        .filter(|vote| {
+                            vote.data.source_number == current_justified_number
+                                && vote.data.target_number == header.number
+                        })
+                        .count();
+                    if eligible_votes >= quorum {
+                        return Some((current_justified_number, current_justified_hash));
+                    }
+                }
+
+                Some((snap.vote_data.source_number, snap.vote_data.source_hash))
+            }
             None => {
                 tracing::warn!(
                     target: "bsc::forkchoice",

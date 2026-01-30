@@ -1,7 +1,8 @@
 use std::sync::Arc;
-use alloy_consensus::{Header, BlockHeader};
+use alloy_consensus::Header;
 use alloy_primitives::{Address, Bytes, B256};
 use crate::consensus::parlia::Snapshot;
+use crate::consensus::eip4844::next_block_excess_blob_gas_with_mendel;
 use crate::consensus::parlia::consensus::Parlia;
 use crate::consensus::parlia::util::{calculate_difficulty, debug_header};
 use crate::chainspec::BscChainSpec;
@@ -51,7 +52,13 @@ where
     };
     if BscHardforks::is_cancun_active_at_timestamp(parlia.spec.as_ref(), new_header.number, new_header.timestamp) {
         let blob_params = parlia.spec.blob_params_at_timestamp(new_header.timestamp);
-        new_header.excess_blob_gas = parent_header.maybe_next_block_excess_blob_gas(blob_params);
+        new_header.excess_blob_gas = next_block_excess_blob_gas_with_mendel(
+            parlia.spec.as_ref(),
+            new_header.number,
+            new_header.timestamp,
+            parent_header,
+            blob_params,
+        );
     }
 
     new_header
