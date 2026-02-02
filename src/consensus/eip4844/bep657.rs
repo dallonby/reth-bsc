@@ -238,8 +238,7 @@ mod tests {
         let timestamp = 2000;
 
         // Create parent with specific excess_blob_gas
-        let mut parent = Header::default();
-        parent.excess_blob_gas = Some(12345);
+        let parent = Header { excess_blob_gas: Some(12345), ..Default::default() };
 
         let blob_params = Some(BlobParams::cancun());
 
@@ -282,9 +281,11 @@ mod tests {
         let timestamp = 2000;
 
         // Create parent with blob gas values for recalculation
-        let mut parent = Header::default();
-        parent.excess_blob_gas = Some(0);
-        parent.blob_gas_used = Some(0);
+        let parent = Header {
+            excess_blob_gas: Some(0),
+            blob_gas_used: Some(0),
+            ..Default::default()
+        };
 
         let blob_params = Some(BlobParams::cancun());
 
@@ -306,9 +307,11 @@ mod tests {
         let spec = mendel_inactive_chain_spec();
         let timestamp = 500; // Before Mendel
 
-        let mut parent = Header::default();
-        parent.excess_blob_gas = Some(1000);
-        parent.blob_gas_used = Some(0);
+        let parent = Header {
+            excess_blob_gas: Some(1000),
+            blob_gas_used: Some(0),
+            ..Default::default()
+        };
 
         let blob_params = Some(BlobParams::cancun());
 

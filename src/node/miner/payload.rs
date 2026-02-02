@@ -703,38 +703,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::validate_bsc_sidecar;
-    use alloy_consensus::BlobTransactionSidecar;
-    use alloy_eips::eip4844::{Blob, Bytes48};
-    use alloy_eips::eip7594::{
-        BlobTransactionSidecarEip7594, BlobTransactionSidecarVariant, CELLS_PER_EXT_BLOB,
-    };
-    use reth::transaction_pool::error::Eip4844PoolTransactionError;
-
-    #[test]
-    fn bsc_sidecar_accepts_eip4844() {
-        let sidecar = BlobTransactionSidecar::default();
-        let variant = BlobTransactionSidecarVariant::Eip4844(sidecar);
-        assert!(validate_bsc_sidecar(&variant).is_ok());
-    }
-
-    #[test]
-    fn bsc_sidecar_rejects_eip7594() {
-        let blob = Blob::default();
-        let commitment = Bytes48::default();
-        let cell_proofs = vec![Bytes48::default(); CELLS_PER_EXT_BLOB];
-        let sidecar = BlobTransactionSidecarEip7594::new(vec![blob], vec![commitment], cell_proofs);
-        let variant = BlobTransactionSidecarVariant::Eip7594(sidecar);
-
-        assert!(matches!(
-            validate_bsc_sidecar(&variant),
-            Err(Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka)
-        ));
-    }
-}
-
 /// Handle for aborting a BscPayloadJob
 pub struct BscPayloadJobHandle {
     abort_tx: oneshot::Sender<()>,
@@ -1354,5 +1322,37 @@ where
 
         self.potential_payloads.clear();
         Some(best_payload)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_bsc_sidecar;
+    use alloy_consensus::BlobTransactionSidecar;
+    use alloy_eips::eip4844::{Blob, Bytes48};
+    use alloy_eips::eip7594::{
+        BlobTransactionSidecarEip7594, BlobTransactionSidecarVariant, CELLS_PER_EXT_BLOB,
+    };
+    use reth::transaction_pool::error::Eip4844PoolTransactionError;
+
+    #[test]
+    fn bsc_sidecar_accepts_eip4844() {
+        let sidecar = BlobTransactionSidecar::default();
+        let variant = BlobTransactionSidecarVariant::Eip4844(sidecar);
+        assert!(validate_bsc_sidecar(&variant).is_ok());
+    }
+
+    #[test]
+    fn bsc_sidecar_rejects_eip7594() {
+        let blob = Blob::default();
+        let commitment = Bytes48::default();
+        let cell_proofs = vec![Bytes48::default(); CELLS_PER_EXT_BLOB];
+        let sidecar = BlobTransactionSidecarEip7594::new(vec![blob], vec![commitment], cell_proofs);
+        let variant = BlobTransactionSidecarVariant::Eip7594(sidecar);
+
+        assert!(matches!(
+            validate_bsc_sidecar(&variant),
+            Err(Eip4844PoolTransactionError::UnexpectedEip7594SidecarBeforeOsaka)
+        ));
     }
 }

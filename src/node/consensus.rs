@@ -371,20 +371,20 @@ mod tests {
         let (tx, _rx) =
             mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
         let engine = BscForkChoiceEngine::new(
-            TestProvider::default(),
+            TestProvider,
             ConsensusEngineHandle::new(tx),
             chain_spec,
         );
 
-        let mut parent = Header::default();
-        parent.number = 9;
-        parent.timestamp = 1;
+        let parent = Header { number: 9, timestamp: 1, ..Default::default() };
         let parent_hash = parent.hash_slow();
 
-        let mut head = Header::default();
-        head.number = 10;
-        head.timestamp = 2;
-        head.parent_hash = parent_hash;
+        let head = Header {
+            number: 10,
+            timestamp: 2,
+            parent_hash,
+            ..Default::default()
+        };
         let head_hash = head.hash_slow();
 
         let fallback_hash = B256::from([7u8; 32]);
@@ -455,20 +455,20 @@ mod tests {
 
         let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
         let engine = BscForkChoiceEngine::new(
-            TestProvider::default(),
+            TestProvider,
             ConsensusEngineHandle::new(tx),
             chain_spec,
         );
 
-        let mut parent = Header::default();
-        parent.number = 9;
-        parent.timestamp = 1;
+        let parent = Header { number: 9, timestamp: 1, ..Default::default() };
         let parent_hash = parent.hash_slow();
 
-        let mut head = Header::default();
-        head.number = 10;
-        head.timestamp = 2;
-        head.parent_hash = parent_hash;
+        let head = Header {
+            number: 10,
+            timestamp: 2,
+            parent_hash,
+            ..Default::default()
+        };
         let head_hash = head.hash_slow();
 
         let fallback_hash = B256::from([7u8; 32]);
@@ -529,20 +529,20 @@ mod tests {
 
         let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
         let engine = BscForkChoiceEngine::new(
-            TestProvider::default(),
+            TestProvider,
             ConsensusEngineHandle::new(tx),
             chain_spec,
         );
 
-        let mut parent = Header::default();
-        parent.number = 9;
-        parent.timestamp = 1;
+        let parent = Header { number: 9, timestamp: 1, ..Default::default() };
         let parent_hash = parent.hash_slow();
 
-        let mut head = Header::default();
-        head.number = 10;
-        head.timestamp = 2;
-        head.parent_hash = parent_hash;
+        let head = Header {
+            number: 10,
+            timestamp: 2,
+            parent_hash,
+            ..Default::default()
+        };
         let head_hash = head.hash_slow();
 
         let fallback_hash = B256::from([7u8; 32]);
@@ -609,20 +609,20 @@ mod tests {
 
         let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
         let engine = BscForkChoiceEngine::new(
-            TestProvider::default(),
+            TestProvider,
             ConsensusEngineHandle::new(tx),
             chain_spec,
         );
 
-        let mut parent = Header::default();
-        parent.number = 9;
-        parent.timestamp = 1;
+        let parent = Header { number: 9, timestamp: 1, ..Default::default() };
         let parent_hash = parent.hash_slow();
 
-        let mut head = Header::default();
-        head.number = 10;
-        head.timestamp = 2;
-        head.parent_hash = parent_hash;
+        let head = Header {
+            number: 10,
+            timestamp: 2,
+            parent_hash,
+            ..Default::default()
+        };
         let head_hash = head.hash_slow();
 
         let fallback_hash = B256::from([7u8; 32]);
@@ -691,14 +691,13 @@ mod tests {
 
         let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
         let engine = BscForkChoiceEngine::new(
-            TestProvider::default(),
+            TestProvider,
             ConsensusEngineHandle::new(tx),
             chain_spec,
         );
 
-        let mut head = Header::default();
-        head.number = 12; // Head is at 12
-        head.timestamp = 2;
+        // Head is at 12
+        let head = Header { number: 12, timestamp: 2, ..Default::default() };
         let head_hash = head.hash_slow();
 
         let fallback_hash = B256::from([7u8; 32]);
@@ -767,20 +766,20 @@ mod tests {
 
         let (tx, _rx) = mpsc::unbounded_channel::<BeaconEngineMessage<BscPayloadTypes>>();
         let engine = BscForkChoiceEngine::new(
-            TestProvider::default(),
+            TestProvider,
             ConsensusEngineHandle::new(tx),
             chain_spec,
         );
 
-        let mut parent = Header::default();
-        parent.number = 99;
-        parent.timestamp = 1;
+        let parent = Header { number: 99, timestamp: 1, ..Default::default() };
         let parent_hash = parent.hash_slow();
 
-        let mut head = Header::default();
-        head.number = 100;
-        head.timestamp = 2;
-        head.parent_hash = parent_hash;
+        let head = Header {
+            number: 100,
+            timestamp: 2,
+            parent_hash,
+            ..Default::default()
+        };
         let head_hash = head.hash_slow();
 
         let fallback_hash = B256::from([7u8; 32]);

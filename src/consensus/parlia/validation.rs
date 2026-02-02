@@ -1,4 +1,4 @@
-use reth::consensus::{Consensus, ConsensusError, HeaderValidator, TxGasLimitTooHighErr};
+use reth::consensus::{Consensus, ConsensusError, HeaderValidator};
 use reth::primitives::SealedHeader;
 use reth_chainspec::{EthChainSpec, EthereumHardforks, EthereumHardfork};
 use crate::consensus::parlia::util::calculate_millisecond_timestamp;
@@ -10,7 +10,7 @@ use alloy_primitives::B256;
 use reth_primitives::GotExpected;
 use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, MAX_DATA_GAS_PER_BLOCK_DENCUN};
 use crate::BscBlock;
-use reth_primitives_traits::{constants::MAX_TX_GAS_LIMIT_OSAKA, Block};
+use reth_primitives_traits::Block;
 
 const MAX_RLP_BLOCK_SIZE_OSAKA: usize = 8 * 1024 * 1024;
 
@@ -168,17 +168,11 @@ impl<ChainSpec: EthChainSpec + BscHardforks + std::fmt::Debug + Send + Sync + 's
                     max_rlp_length: MAX_RLP_BLOCK_SIZE_OSAKA,
                 });
             }
-
-            for tx in block.body().transactions() {
-                if tx.gas_limit() > MAX_TX_GAS_LIMIT_OSAKA {
-                    return Err(TxGasLimitTooHighErr {
-                        tx_hash: *tx.hash(),
-                        gas_limit: tx.gas_limit(),
-                        max_allowed: MAX_TX_GAS_LIMIT_OSAKA,
-                    }
-                    .into());
-                }
-            }
+            // Note: Individual transaction gas limit validation (EIP-7825) is intentionally
+            // NOT performed here because system transactions use i64::MAX gas limit.
+            // The validation happens during EVM execution via cfg_env.tx_gas_limit_cap,
+            // where system transactions can be properly identified and exempted.
+            // This is consistent with go-bsc's block_validator.go behavior.
         }
 
         // EIP-4844: Shard Blob Transactions
