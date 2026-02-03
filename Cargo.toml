@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "testing/bsc-ef-tests"]
+
 [package]
 name = "reth_bsc"
 version = "0.1.0"
@@ -13,58 +16,58 @@ name = "reth-bsc"
 path = "src/main.rs"
 
 [dependencies]
-reth = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-cli = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-cli-commands = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-basic-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-db = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-engine-local = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-chainspec = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-cli-util = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-discv4 = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle", features = [
+reth = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-cli = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-cli-commands = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-basic-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-db = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-engine-local = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-chainspec = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-cli-util = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-discv4 = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "test-utils",
 ] }
-reth-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-ethereum-forks = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle", features = [
+reth-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-ethereum-forks = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "serde",
 ] }
-reth-ethereum-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-payload-builder-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-chain-state = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-ethereum-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-eth-wire = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-eth-wire-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-evm = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-evm-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-execution-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-ipc = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-metrics = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-node-core = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-revm = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-network = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle", features = [
+reth-ethereum-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-payload-builder-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-chain-state = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-ethereum-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-eth-wire = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-eth-wire-types = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-evm = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-evm-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-execution-types = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-ipc = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-metrics = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-node-core = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-revm = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-network = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "test-utils",
 ] }
-reth-network-p2p = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-network-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-node-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle", features = [
+reth-network-p2p = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-network-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-node-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "test-utils",
 ] }
-reth-network-peers = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-payload-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-ethereum-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-primitives-traits = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-provider = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle", features = [
+reth-network-peers = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-payload-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-ethereum-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-primitives-traits = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-provider = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb", features = [
     "test-utils",
 ] }
-reth-rpc-eth-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-rpc-convert = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-rpc-engine-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-rpc-server-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-trie-common = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-trie-db = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-tasks = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
-reth-transaction-pool = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eip7594-sidecar-toggle" }
+reth-rpc-eth-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-rpc-convert = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-rpc-engine-api = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-rpc-server-types = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-trie-common = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-trie-db = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-tasks = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
+reth-transaction-pool = { git = "https://github.com/bnb-chain/reth.git", branch = "rebase-v1.10.2-bnb" }
 revm = "34.0.0"
 revm-context-interface = "14.0.0"
 revm-database = "10.0.0"

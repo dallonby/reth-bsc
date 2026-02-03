@@ -41,6 +41,27 @@ make build
 make maxperf 
 ```
 
+## Testing
+
+### Ethereum Execution Spec Tests
+
+Run the [Ethereum Execution Spec Tests](https://github.com/ethereum/execution-spec-tests) to validate BSC EVM compatibility:
+
+```bash
+# Download test fixtures (v5.4.0)
+make download-eest
+
+# Run tests
+make ef-tests
+
+# Or use nextest for faster parallel execution (requires cargo-nextest)
+# Install with: cargo install cargo-nextest
+make ef-tests-nextest
+
+# Clean up test fixtures
+make clean-eest
+```
+
 ## Running
 
 ### Full Node (Recommended)
