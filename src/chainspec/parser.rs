@@ -196,7 +196,10 @@ fn add_hardforks_to_chainspec(
     }
 
     if let Some(osaka_time) = config.get("osakaTime").and_then(|v| v.as_u64()) {
-        chain_spec = chain_spec.with_fork(EthereumHardfork::Osaka, ForkCondition::Timestamp(osaka_time));
+        // Only register BscHardfork::Osaka — do NOT register EthereumHardfork::Osaka.
+        // BSC rejected EIP-7594 (PeerDAS). Registering EthereumHardfork::Osaka would cause the
+        // upstream reth RPC layer to auto-convert EIP-4844 blob sidecars into EIP-7594 format,
+        // which would then be rejected by the pool validator (no_eip7594).
         chain_spec = chain_spec.with_fork(BscHardfork::Osaka, ForkCondition::Timestamp(osaka_time));
     }
     
