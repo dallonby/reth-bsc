@@ -196,10 +196,10 @@ fn add_hardforks_to_chainspec(
     }
 
     if let Some(osaka_time) = config.get("osakaTime").and_then(|v| v.as_u64()) {
-        // Only register BscHardfork::Osaka — do NOT register EthereumHardfork::Osaka.
-        // BSC rejected EIP-7594 (PeerDAS). Registering EthereumHardfork::Osaka would cause the
-        // upstream reth RPC layer to auto-convert EIP-4844 blob sidecars into EIP-7594 format,
-        // which would then be rejected by the pool validator (no_eip7594).
+        // Only register BscHardfork::Osaka here. EthereumHardfork::Osaka is blocked in
+        // BscChainSpec::ethereum_fork_activation() to prevent EIP-7594 sidecar conversion.
+        // Note: BscHardfork::Osaka and EthereumHardfork::Osaka share the same name() = "Osaka",
+        // so the ChainHardforks map key collision is handled at the trait level.
         chain_spec = chain_spec.with_fork(BscHardfork::Osaka, ForkCondition::Timestamp(osaka_time));
     }
     
