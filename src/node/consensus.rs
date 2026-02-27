@@ -561,13 +561,17 @@ mod tests {
             Address::from([2u8; 20]),
             Address::from([3u8; 20]),
         ];
-        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+
+        let mut snap = Snapshot::new(validators.clone(), head.number, head_hash, 200, None);
         snap.vote_data = VoteData {
             source_number: 7,
             source_hash: fallback_hash,
             target_number: 9,
             target_hash: parent_hash,
         };
+
+        // Parent snapshot used for quorum calculation
+        let parent_snap = Snapshot::new(validators, parent.number, parent_hash, 200, None);
 
         let provider: Arc<dyn SnapshotProvider + Send + Sync> =
             if let Some(existing) = crate::shared::get_snapshot_provider() {
@@ -579,6 +583,7 @@ mod tests {
                 p
             };
         provider.insert(snap);
+        provider.insert(parent_snap);
 
         let baseline = engine.get_finalized_number_and_hash(&head).unwrap();
         assert_eq!(baseline, (7, fallback_hash));
@@ -645,13 +650,15 @@ mod tests {
             Address::from([2u8; 20]),
             Address::from([3u8; 20]),
         ];
-        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        let mut snap = Snapshot::new(validators.clone(), head.number, head_hash, 200, None);
         snap.vote_data = VoteData {
             source_number: 7,
             source_hash: fallback_hash,
             target_number: 9,
             target_hash: parent_hash,
         };
+
+        let parent_snap = Snapshot::new(validators, parent.number, parent_hash, 200, None);
 
         let provider: Arc<dyn SnapshotProvider + Send + Sync> =
             if let Some(existing) = crate::shared::get_snapshot_provider() {
@@ -663,6 +670,7 @@ mod tests {
                 p
             };
         provider.insert(snap);
+        provider.insert(parent_snap);
 
         // Add only ONE vote (quorum requires 2)
         let vote_data = VoteData {
@@ -719,13 +727,15 @@ mod tests {
             Address::from([2u8; 20]),
             Address::from([3u8; 20]),
         ];
-        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        let mut snap = Snapshot::new(validators.clone(), head.number, head_hash, 200, None);
         snap.vote_data = VoteData {
             source_number: 7,
             source_hash: fallback_hash,
             target_number: 9,
             target_hash: parent_hash,
         };
+
+        let parent_snap = Snapshot::new(validators, parent.number, parent_hash, 200, None);
 
         let provider: Arc<dyn SnapshotProvider + Send + Sync> =
             if let Some(existing) = crate::shared::get_snapshot_provider() {
@@ -737,6 +747,7 @@ mod tests {
                 p
             };
         provider.insert(snap);
+        provider.insert(parent_snap);
 
         // Add votes with WRONG source_number (8 instead of 9)
         let wrong_vote_data = VoteData {
@@ -799,13 +810,15 @@ mod tests {
             Address::from([2u8; 20]),
             Address::from([3u8; 20]),
         ];
-        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        let mut snap = Snapshot::new(validators.clone(), head.number, head_hash, 200, None);
         snap.vote_data = VoteData {
             source_number: 7,
             source_hash: fallback_hash,
             target_number: 9,
             target_hash: parent_hash,
         };
+
+        let parent_snap = Snapshot::new(validators, parent.number, parent_hash, 200, None);
 
         let provider: Arc<dyn SnapshotProvider + Send + Sync> =
             if let Some(existing) = crate::shared::get_snapshot_provider() {
@@ -817,6 +830,7 @@ mod tests {
                 p
             };
         provider.insert(snap);
+        provider.insert(parent_snap);
 
         // Add votes with WRONG target_number (11 instead of 10)
         let wrong_vote_data = VoteData {
@@ -957,13 +971,15 @@ mod tests {
             .map(|i| Address::from([i as u8; 20]))
             .collect();
 
-        let mut snap = Snapshot::new(validators, head.number, head_hash, 200, None);
+        let mut snap = Snapshot::new(validators.clone(), head.number, head_hash, 200, None);
         snap.vote_data = VoteData {
             source_number: 97,
             source_hash: fallback_hash,
             target_number: 99,
             target_hash: parent_hash,
         };
+
+        let parent_snap = Snapshot::new(validators, parent.number, parent_hash, 200, None);
 
         let provider: Arc<dyn SnapshotProvider + Send + Sync> =
             if let Some(existing) = crate::shared::get_snapshot_provider() {
@@ -975,6 +991,7 @@ mod tests {
                 p
             };
         provider.insert(snap);
+        provider.insert(parent_snap);
 
         let vote_data = VoteData {
             source_number: 99,
@@ -1339,19 +1356,32 @@ where
                 let current_justified_number = snap.vote_data.target_number;
                 let current_justified_hash = snap.vote_data.target_hash;
 
-                if header.number > 0 && header.number - 1 == current_justified_number
-                    && !snap.validators.is_empty()
-                {
-                    let quorum = usize::div_ceil(snap.validators.len() * 2, 3);
-                    let eligible_votes = vote_pool::fetch_vote_by_block_hash(header.hash_slow())
-                        .into_iter()
-                        .filter(|vote| {
-                            vote.data.source_number == current_justified_number
-                                && vote.data.target_number == header.number
-                        })
-                        .count();
-                    if eligible_votes >= quorum {
-                        return Some((current_justified_number, current_justified_hash));
+                if header.number > 0 && header.number - 1 == current_justified_number {
+                    // Use parent snapshot for quorum calculation to avoid
+                    // incorrect thresholds during epoch validator-set transitions.
+                    if let Some(parent_snap) = sp.snapshot_by_hash(&header.parent_hash) {
+                        if !parent_snap.validators.is_empty() {
+                            let quorum =
+                                usize::div_ceil(parent_snap.validators.len() * 2, 3);
+                            let eligible_votes =
+                                vote_pool::fetch_vote_by_block_hash(header.hash_slow())
+                                    .into_iter()
+                                    .filter(|vote| {
+                                        vote.data.source_number == current_justified_number
+                                            && vote.data.target_number == header.number
+                                    })
+                                    .count();
+                            if eligible_votes >= quorum {
+                                return Some((current_justified_number, current_justified_hash));
+                            }
+                        }
+                    } else {
+                        tracing::error!(
+                            target: "bsc::forkchoice",
+                            parent_hash = ?header.parent_hash,
+                            block_number = header.number,
+                            "Failed to get parent snapshot for finality check"
+                        );
                     }
                 }
 
