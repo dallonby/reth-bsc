@@ -16,58 +16,58 @@ name = "reth-bsc"
 path = "src/main.rs"
 
 [dependencies]
-reth = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-cli = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-cli-commands = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-basic-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-db = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-engine-local = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-chainspec = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-cli-util = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-discv4 = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix", features = [
+reth = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-cli = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-cli-commands = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-basic-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-db = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-engine-local = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-chainspec = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-cli-util = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-discv4 = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune", features = [
     "test-utils",
 ] }
-reth-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-ethereum-forks = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix", features = [
+reth-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-ethereum-forks = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune", features = [
     "serde",
 ] }
-reth-ethereum-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-payload-builder-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-chain-state = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-ethereum-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-eth-wire = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-eth-wire-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-evm = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-evm-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-execution-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-ipc = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-metrics = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-node-core = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-revm = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-network = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix", features = [
+reth-ethereum-payload-builder = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-payload-builder-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-chain-state = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-ethereum-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-eth-wire = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-eth-wire-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-evm = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-evm-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-execution-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-ipc = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-metrics = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-node-core = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-revm = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-network = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune", features = [
     "test-utils",
 ] }
-reth-network-p2p = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-network-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-node-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix", features = [
+reth-network-p2p = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-network-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-node-ethereum = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune", features = [
     "test-utils",
 ] }
-reth-network-peers = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-payload-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-ethereum-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-primitives-traits = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-provider = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix", features = [
+reth-network-peers = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-payload-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-ethereum-engine-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-primitives = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-primitives-traits = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-provider = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune", features = [
     "test-utils",
 ] }
-reth-rpc-eth-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-rpc-convert = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-rpc-engine-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-rpc-server-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-trie-common = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-trie-db = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-tasks = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
-reth-transaction-pool = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/eth_getFinalizedHeader-bsc-fix" }
+reth-rpc-eth-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-rpc-convert = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-rpc-engine-api = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-rpc-server-types = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-trie-common = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-trie-db = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-tasks = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
+reth-transaction-pool = { git = "https://github.com/bnb-chain/reth.git", branch = "feat/skip-prune" }
 revm = "34.0.0"
 revm-context-interface = "14.0.0"
 revm-database = "10.0.0"
