@@ -317,7 +317,7 @@ impl BscNetworkBuilder {
         });
 
         // TODO: update network with the latest canonical head, but has a fork id issue, can fix it later.
-        let mut network_builder = network_builder
+        let network_builder = network_builder
             .boot_nodes(ctx.chain_spec().bootnodes().unwrap_or_default())
             .set_head(ctx.chain_spec().head())
             .with_pow()
@@ -328,18 +328,21 @@ impl BscNetworkBuilder {
             .add_rlpx_sub_protocol(bsc_protocol::protocol::handler::BscProtocolHandlerV2)
             .add_rlpx_sub_protocol(bsc_protocol::protocol::handler::BscProtocolHandlerV1);
 
-        // Apply proxyed peer IDs if configured
-        if let Some(proxyed_peer_ids) = crate::shared::get_proxyed_peer_ids() {
-            network_builder = network_builder.proxied_peers(proxyed_peer_ids.clone());
-        }
+        // reth 2.0 dropped NetworkConfigBuilder::proxied_peers and
+        // PeersConfig.proxyed_node_ids (BSC-specific extension to the bnb-chain
+        // fork). We keep the registry-side proxied-peer behaviour by pulling
+        // the IDs from the global config directly (set via CLI in
+        // crate::shared::get_proxyed_peer_ids); the upstream peer manager has
+        // no notion of this category, so it just ignores them.
 
         let peer_id = network_builder.get_peer_id();
         let mut network_config = ctx.build_network_config(network_builder);
         network_config.status.forkid = network_config.fork_filter.current();
 
-        // Initialize BSC protocol registry with proxied peers from config
-        // This mirrors the same functionality in the main peer manager
-        let proxied_node_ids = network_config.peers_config.proxyed_node_ids.clone();
+        // Initialize BSC protocol registry with proxied peers from CLI/config.
+        let proxied_node_ids: Vec<_> = crate::shared::get_proxyed_peer_ids()
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default();
         if !proxied_node_ids.is_empty() {
             tracing::info!(
                 target: "bsc::net",
@@ -352,9 +355,13 @@ impl BscNetworkBuilder {
         }
 
         let provider = ctx.provider();
-        if let Ok(number) = provider.best_block_number() {
-            let td = provider.header_td_by_number(number).unwrap_or_default();
-            network_config.status.total_difficulty = td;
+        if let Ok(_number) = provider.best_block_number() {
+            // reth 2.0 dropped HeaderProvider::header_td_by_number; UnifiedStatus
+            // also made total_difficulty an Option (eth/66–68 only). Until the
+            // BSC TD accumulator (project memo) is wired up, advertise None — peers
+            // on eth/69 will see the same. Required to be replaced before BSC's
+            // TD-sensitive vote-broadcast logic re-enables.
+            network_config.status.total_difficulty = None;
         }
         debug!(
             target: "bsc::net",

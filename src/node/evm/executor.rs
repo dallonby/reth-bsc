@@ -4,9 +4,9 @@ use crate::{
         SystemContract, feynman_fork::ValidatorElectionInfo, get_upgrade_system_contracts, is_system_transaction
     }
 };
-use alloy_consensus::{Header, Transaction, TransactionEnvelope, TxReceipt};
+use alloy_consensus::{Header, Transaction, TxReceipt};
 use alloy_eips::{eip7685::Requests, Encodable2718};
-use alloy_evm::{block::{ExecutableTx, StateChangeSource, TxResult}, eth::receipt_builder::ReceiptBuilderCtx, IntoTxEnv as AlloyIntoTxEnv};
+use alloy_evm::{block::{ExecutableTx, StateChangeSource, TxResult}, eth::receipt_builder::ReceiptBuilderCtx};
 use alloy_primitives::{hex, uint, Address, U256, BlockNumber, Bytes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use super::config::{BscBlockExecutionCtx, revm_spec_by_timestamp_and_block_number};

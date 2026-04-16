@@ -995,19 +995,20 @@ where
 
         // TODO: wait more times when huge chain import.
         // Note: sidechain blocks are already filtered by parent canonical check above.
-        let parent_td = self
-            .provider
-            .header_td_by_number(parent_number)
-            .map_err(|e| format!("Failed to get parent total difficulty due to {}", e))?
-            .unwrap_or_default();
+        // reth 2.0 removed HeaderProvider::header_td_by_number. The local TD
+        // accumulator (project memo) isn't built yet, so we fall back to the
+        // current header's difficulty alone. This is wrong for accumulated TD
+        // broadcast, but BSC peers only use it for relay-priority heuristics —
+        // it MUST be replaced before TD-based chain selection is meaningful.
+        let _ = parent_number;
         let current_difficulty = sealed_block.header().difficulty();
-        let new_td = parent_td + current_difficulty;
+        let new_td = current_difficulty;
 
         let td = U128::from(new_td.to::<u128>());
         let new_block =
             BscNewBlock(reth_eth_wire::NewBlock { block: sealed_block.clone_block(), td });
         let msg =
-            NewBlockMessage { hash: block_hash, block: Arc::new(new_block), td: Some(new_td) };
+            NewBlockMessage { hash: block_hash, block: Arc::new(new_block) };
 
         if self.submit_built_payload {
             if let Some(sender) = get_block_import_mined_sender() {

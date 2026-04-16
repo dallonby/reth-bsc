@@ -183,11 +183,7 @@ where
                             finalized_block_hash: alloy_primitives::B256::ZERO,
                         };
                         match engine
-                            .fork_choice_updated(
-                                forkchoice_state,
-                                None,
-                                reth_payload_primitives::EngineApiMessageVersion::V1,
-                            )
+                            .fork_choice_updated(forkchoice_state, None)
                             .await
                         {
                             Ok(result) => {

@@ -23,7 +23,7 @@ use revm::{
     DatabaseCommit,
 };
 use revm_database::DatabaseCommitExt;
-use alloy_consensus::{Header, TxReceipt, Transaction as AlloyTransaction, TransactionEnvelope, SignableTransaction};
+use alloy_consensus::{Header, TxReceipt, Transaction as AlloyTransaction, SignableTransaction};
 use alloy_primitives::{Address, BlockNumber, TxKind, U256, hex};
 use std::collections::HashMap;
 use tracing::warn;

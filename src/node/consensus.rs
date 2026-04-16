@@ -1258,7 +1258,7 @@ where
 
         match self
             .engine_handle
-            .fork_choice_updated(state, None, EngineApiMessageVersion::default())
+            .fork_choice_updated(state, None)
             .await
         {
             Ok(response) => match response.payload_status.status {
@@ -1434,14 +1434,20 @@ where
     /// This private method queries the TD from the engine and caches it for future use.
     async fn header_td(
         &self,
-        engine: &ConsensusEngineHandle<BscPayloadTypes>,
-        number: u64,
+        _engine: &ConsensusEngineHandle<BscPayloadTypes>,
+        _number: u64,
         hash: B256,
     ) -> Result<Option<alloy_primitives::U256>, ParliaConsensusErr> {
         if let Some(td) = self.header_td_cache.write().get(&hash) {
             return Ok(*td);
         }
-        let td = engine.query_td(number, hash).await.map_err(ParliaConsensusErr::internal)?;
+        // reth 2.0 dropped ConsensusEngineHandle::query_td (TD removed post-merge).
+        // BSC needs TD for fork-choice — see project memo: "BSC still uses TD —
+        // will need a local TD accumulator." Until that lands, return ZERO so
+        // the cache is populated and the comparison degrades to "incoming TD ==
+        // current TD", forcing the canonical-by-hash path. Tests covering chain
+        // reorg by TD will need the accumulator wired up to be meaningful.
+        let td = Some(alloy_primitives::U256::ZERO);
         self.header_td_cache.write().insert(hash, td);
         Ok(td)
     }

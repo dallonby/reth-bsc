@@ -190,7 +190,7 @@ pub async fn batch_request_range_and_await_import(
         for block in resp.blocks.iter().rev() {
             let nb = BscNewBlock(NewBlock { block: block.clone(), td: U128::from(0u64) });
             let hash = block.header.hash_slow();
-            let msg = NewBlockMessage { hash, block: Arc::new(nb), td: Some(U256::ZERO) };
+            let msg = NewBlockMessage { hash, block: Arc::new(nb) };
             if let Err(e) = sender.send((msg, peer)) {
                 tracing::error!(target: "bsc::registry", error=%e, "Failed to send block to import path");
             }
@@ -242,7 +242,13 @@ pub fn broadcast_votes(votes: Vec<crate::consensus::parlia::vote::VoteEnvelope>)
 
         let mut to_remove: Vec<PeerId> = Vec::new();
         for (peer, tx) in reg_snapshot {
-            let peer_best_td = peer_info_map.get(&peer).and_then(|info| info.best_td);
+            // reth 2.0: PeerInfo.best_td/best_number were removed post-merge; peer
+            // status now lives under info.status.{total_difficulty,latest_block}.
+            // BSC is still TD-sensitive, so we read TD off the eth/66–68 handshake
+            // (eth/69 peers expose None and get treated as "no known TD").
+            let peer_best_td = peer_info_map
+                .get(&peer)
+                .and_then(|info| info.status.total_difficulty);
             let allow = should_allow_vote_broadcast(
                 is_evn(&peer) || is_proxyed_peer(&peer),
                 local_best_td,
@@ -254,9 +260,9 @@ pub fn broadcast_votes(votes: Vec<crate::consensus::parlia::vote::VoteEnvelope>)
                 tracing::debug!(
                     target: "bsc::vote",
                     peer=%peer,
-                    latest_block=info.best_number,
+                    latest_block=info.status.latest_block.unwrap_or_default(),
                     local_best_td=local_best_td,
-                    peer_best_td=u256_to_u128(info.best_td.unwrap_or_default()),
+                    peer_best_td=u256_to_u128(info.status.total_difficulty.unwrap_or_default()),
                     allow=allow,
                     "peer info when checking allow broadcast votes"
                 );

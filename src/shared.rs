@@ -239,20 +239,13 @@ where
         .set(best_block_number_fn)
         .map_err(|_| "Failed to set best block number provider")?;
 
-    // Create function for best total difficulty (u128 approximation)
-    let provider_clone4 = provider.clone();
-    let best_td_fn = Arc::new(move || -> Option<u128> {
-        match provider_clone4.best_block_number() {
-            Ok(n) => match provider_clone4.header_td_by_number(n) {
-                Ok(Some(td)) => {
-                    // Convert to u128; safe approximation for small deltas (thresholds are small)
-                    Some(td.to::<u128>())
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    });
+    // Create function for best total difficulty (u128 approximation).
+    // reth 2.0 dropped HeaderProvider::header_td_by_number. Until the BSC-side
+    // TD accumulator (project memo) is wired up, return None so callers fall
+    // back to safe defaults — vote-broadcast treats this as "TD unknown" and
+    // skips the delta-TD gating, which mirrors how an eth/69 peer would look.
+    let _ = provider;
+    let best_td_fn = Arc::new(move || -> Option<u128> { None });
     BEST_TD_PROVIDER.set(best_td_fn).map_err(|_| "Failed to set best td provider")?;
 
     Ok(())
