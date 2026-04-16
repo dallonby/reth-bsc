@@ -39,9 +39,24 @@ pub(crate) struct SourceTip {
 /// read v1 data; where the encodings match (headers, body indices) this Just
 /// Works. Where they don't (transactions), we treat the value as an opaque
 /// Vec<u8> and bridge via RLP in the reader.
+///
+/// Accepts either the top-level reth datadir (e.g. `/mnt/.../data_dir`) or the
+/// MDBX subdir (`/mnt/.../data_dir/db`). reth datadirs put MDBX under `db/`
+/// by convention, so we probe that automatically — users commonly point
+/// `--from` at the datadir root and expect it to work.
 pub(crate) fn open_source_db(path: &Path) -> eyre::Result<DatabaseEnv> {
+    let resolved = if path.join("mdbx.dat").is_file() {
+        path.to_path_buf()
+    } else if path.join("db").join("mdbx.dat").is_file() {
+        path.join("db")
+    } else {
+        // Let MDBX produce its own error against the user-supplied path;
+        // that's usually clearer than our heuristic failing silently.
+        path.to_path_buf()
+    };
+    tracing::info!(path = %resolved.display(), "opening source MDBX env");
     let env = DatabaseEnv::open(
-        path,
+        &resolved,
         DatabaseEnvKind::RO,
         DatabaseArguments::new(Default::default()),
     )?;
@@ -91,8 +106,7 @@ pub(crate) fn reader_worker(
             .ok_or_else(|| eyre::eyre!("missing canonical hash for block {n}"))?;
 
         let body = match phase {
-            Phase::HeadersOnly => None,
-            Phase::All => Some(read_body(&reader, n)?),
+            Phase::StaticHeaders | Phase::StaticBodies | Phase::MdbxHeadersOnly => None,
         };
 
         if tx.send(BlockPayload { number: n, hash, header, body }).is_err() {

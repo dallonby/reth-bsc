@@ -26,8 +26,22 @@ pub(crate) struct BlockPayload {
 ///
 /// Uses `init_db` so the default `Tables` schema is created first; caller is
 /// expected to layer `ensure_parlia_tables` on top afterwards.
+///
+/// Accepts the top-level datadir and auto-creates the `db/` subdir (reth
+/// convention), so users can pass `--to /mnt/bsc-data` rather than
+/// `/mnt/bsc-data/db` and it just works.
 pub(crate) fn open_dest_db(path: &Path) -> eyre::Result<DatabaseEnv> {
-    reth_db::init_db(path, DatabaseArguments::new(Default::default()))
+    let resolved = if path.join("mdbx.dat").is_file()
+        || path.file_name().map(|n| n == "db").unwrap_or(false)
+    {
+        path.to_path_buf()
+    } else {
+        path.join("db")
+    };
+    std::fs::create_dir_all(&resolved)
+        .map_err(|e| eyre::eyre!("mkdir {}: {e}", resolved.display()))?;
+    tracing::info!(path = %resolved.display(), "opening (or initializing) dest MDBX env");
+    reth_db::init_db(&resolved, DatabaseArguments::new(Default::default()))
         .map_err(|e| eyre::eyre!("init destination db: {e}"))
 }
 
@@ -159,10 +173,11 @@ pub(crate) fn commit_checkpoints(
 ) -> eyre::Result<()> {
     let tx = db.tx_mut()?;
 
-    // Headers checkpoint: block-number-only.
+    // Every phase stamps Headers; static-all / mdbx-all additionally cover
+    // the downstream append-only stages.
     put_checkpoint(&tx, StageId::Headers, tip_block)?;
 
-    if matches!(phase, Phase::All) {
+    if matches!(phase, Phase::StaticBodies) {
         put_checkpoint(&tx, StageId::Bodies, tip_block)?;
         put_checkpoint(&tx, StageId::SenderRecovery, tip_block)?;
         put_checkpoint(&tx, StageId::TransactionLookup, tip_block)?;

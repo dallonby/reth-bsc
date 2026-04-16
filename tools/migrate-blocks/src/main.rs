@@ -26,8 +26,10 @@ use clap::Parser;
 use std::path::PathBuf;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+mod bodies;
 mod pipeline;
 mod reader;
+mod static_copy;
 mod writer;
 
 /// CLI surface for the migrator.
@@ -69,21 +71,31 @@ struct Cli {
     #[arg(long)]
     dry_run: bool,
 
-    /// Phase to run. Default: `headers-only` on the first pass so we can
-    /// validate the codec bridge before extending to bodies. Set to `all` to
-    /// run the full append-only layer.
-    #[arg(long, default_value = "headers-only")]
+    /// Phase to run. Default: `static-headers` — copy static_files headers
+    /// segments and stamp `StageCheckpoints[Headers]`. `static-all` extends
+    /// to transactions + receipts segments. `mdbx-headers-only` is the
+    /// legacy per-block MDBX iteration (rarely useful).
+    #[arg(long, default_value = "static-headers")]
     phase: Phase,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum Phase {
-    /// Only Headers (and HeaderNumbers/CanonicalHeaders). Smallest, safest,
-    /// validates the pipeline end-to-end before we trust heavier tables.
-    HeadersOnly,
-    /// Headers + Bodies (BlockBodyIndices + Transactions + TransactionBlocks +
-    /// Ommers + Withdrawals) + SenderRecovery.
-    All,
+    /// Copy `static_files/headers_*` segments + set StageCheckpoints[Headers].
+    /// Safest tier: NippyJar format is v1 in both reth versions and Header
+    /// Compact encoding is stable, so a raw file copy works.
+    StaticHeaders,
+    /// Defensive bodies migration: runs a two-gate preflight (decode probe
+    /// + transactions_root round-trip) against the source, aborts if either
+    /// gate fails, then copies `static_files/transactions_*` + MDBX body
+    /// index tables (BlockBodyIndices / TransactionBlocks / BlockOmmers /
+    /// BlockWithdrawals) and stamps StageCheckpoints[Bodies]. Assumes
+    /// `static-headers` has already been run against the same destination.
+    StaticBodies,
+    /// Legacy: iterate MDBX Headers table block-by-block (only useful if the
+    /// source datadir is pre-static-files or has unsegmented headers in
+    /// MDBX). Not the common path on BSC.
+    MdbxHeadersOnly,
 }
 
 fn main() -> eyre::Result<()> {
