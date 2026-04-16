@@ -268,6 +268,8 @@ where
             gas_limit: header.gas_limit(),
             basefee: header.base_fee_per_gas().unwrap_or_default(),
             blob_excess_gas_and_price,
+            // BSC doesn't model beacon-chain slots; leave zero.
+            slot_num: 0,
         };
 
         Ok(EvmEnv { cfg_env, block_env })
@@ -347,6 +349,8 @@ where
             basefee: basefee.unwrap_or_default(),
             // calculate excess gas based on parent block's blob gas usage
             blob_excess_gas_and_price,
+            // BSC doesn't model beacon-chain slots; leave zero.
+            slot_num: 0,
         };
 
         Ok(EvmEnv { cfg_env, block_env })
@@ -362,7 +366,7 @@ where
                 parent_hash: block.header().parent_hash,
                 parent_beacon_block_root: block.header().parent_beacon_block_root,
                 ommers: &block.body().ommers,
-                withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                withdrawals: block.body().withdrawals.as_ref().map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.header().extra_data.clone(),
             },
             header: Some(block.header().clone()),
@@ -382,7 +386,7 @@ where
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
-                withdrawals: attributes.withdrawals.map(Cow::Owned),
+                withdrawals: attributes.withdrawals.map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.extra_data,
             },
             header: None, // No header available for next block context
@@ -444,7 +448,7 @@ where
                 parent_hash: block.header.parent_hash(),
                 parent_beacon_block_root: block.header.parent_beacon_block_root,
                 ommers: &block.body.inner.ommers,
-                withdrawals: block.body.inner.withdrawals.as_ref().map(Cow::Borrowed),
+                withdrawals: block.body.inner.withdrawals.as_ref().map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.header.extra_data.clone(),
             },
             header: Some(block.header.clone()),

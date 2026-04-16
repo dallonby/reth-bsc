@@ -95,12 +95,15 @@ impl<DB: Database + Clone> Clone for EnhancedDbSnapshotProvider<DB> {
 impl<DB: Database> DbSnapshotProvider<DB> {
     fn query_db_by_hash(&self, block_hash: &BlockHash) -> Option<Snapshot> {
         let tx = self.db.tx().ok()?;
-        if let Ok(Some(raw_blob)) = tx.get::<crate::consensus::parlia::db::ParliaSnapshotsByHash>(*block_hash) {
-            let raw = &raw_blob.0;
-            if let Ok(decoded) = Snapshot::decompress(raw) {
-                tracing::debug!("Succeed to query snapshot from db, block_number: {}, block_hash: {}", decoded.block_number, decoded.block_hash);
-                return Some(decoded);
-            }
+        // The `ParliaSnapshotsByHash` table now stores `Snapshot` directly, so the
+        // get/put methods do the (de)compression round-trip for us.
+        if let Ok(Some(snapshot)) = tx.get::<crate::consensus::parlia::db::ParliaSnapshotsByHash>(*block_hash) {
+            tracing::debug!(
+                "Succeed to query snapshot from db, block_number: {}, block_hash: {}",
+                snapshot.block_number,
+                snapshot.block_hash
+            );
+            return Some(snapshot);
         }
         None
     }
