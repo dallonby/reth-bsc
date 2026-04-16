@@ -392,10 +392,22 @@ fn main() -> eyre::Result<()> {
                         // Get pool and provider from context
                         let pool = ctx.pool().clone();
                         let provider = ctx.provider().clone();
-                        
+
                         let blob_api = BlobApiImpl::new(pool, provider);
                         ctx.modules.merge_configured(blob_api.into_rpc())?;
                         tracing::info!("Succeed to register Blob RPC API");
+
+                        // eth_getFinalizedHeader / eth_getFinalizedBlock
+                        // (BEP-126 finality pointer, geth-BSC parity).
+                        tracing::info!("Start to register BSC eth-namespace finality methods...");
+                        use reth_bsc::rpc::eth_ext::{
+                            BscEthFinalityApiImpl, BscEthFinalityApiServer,
+                        };
+                        let finality_api = BscEthFinalityApiImpl::new(Arc::new(
+                            ctx.provider().clone(),
+                        ));
+                        ctx.modules.merge_configured(finality_api.into_rpc())?;
+                        tracing::info!("Succeed to register BSC eth-namespace finality methods");
                         Ok(())
                     })
                     .launch().await?;
