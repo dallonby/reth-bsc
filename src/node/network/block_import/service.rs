@@ -639,17 +639,10 @@ mod tests {
             Ok(self.headers_by_number.get(&num).cloned())
         }
 
-        fn header_td(&self, hash: &B256) -> Result<Option<U256>, ProviderError> {
-            Ok(self.td_by_hash.get(hash).cloned())
-        }
-
-        fn header_td_by_number(&self, number: BlockNumber) -> Result<Option<U256>, ProviderError> {
-            if let Some(h) = self.headers_by_number.get(&number) {
-                Ok(self.td_by_hash.get(&h.hash_slow()).cloned())
-            } else {
-                Ok(None)
-            }
-        }
+        // reth 2.0 dropped header_td / header_td_by_number from HeaderProvider
+        // (total-difficulty removed post-merge). The fake's td_by_hash map is
+        // still populated for tests that want to reason about TD locally, but
+        // these methods are no longer on the trait.
 
         fn headers_range(
             &self,
@@ -822,7 +815,7 @@ mod tests {
         };
         let new_block = BscNewBlock(NewBlock { block, td: U128::from(1) });
         let hash = new_block.0.block.header.hash_slow();
-        NewBlockMessage { hash, block: Arc::new(new_block), td: Some(U256::from(1)) }
+        NewBlockMessage { hash, block: Arc::new(new_block) }
     }
 
     /// Helper function to handle engine messages with specified payload statuses
@@ -840,7 +833,6 @@ mod tests {
                     BeaconEngineMessage::ForkchoiceUpdated {
                         state: _,
                         payload_attrs: _,
-                        version: _,
                         tx,
                     } => {
                         tx.send(Ok(OnForkChoiceUpdated::valid(PayloadStatus::new(

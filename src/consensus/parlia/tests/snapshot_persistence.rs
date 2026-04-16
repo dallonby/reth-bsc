@@ -1,6 +1,7 @@
 //! Unit tests for Parlia snapshot database persistence and retrieval.
 
 use super::super::{
+    db::ParliaTables,
     provider::DbSnapshotProvider,
     snapshot::Snapshot,
     provider::SnapshotProvider,
@@ -10,6 +11,18 @@ use reth_db::{init_db, mdbx::DatabaseArguments, Database, transaction::DbTx, cur
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Open a test database and register BSC's Parlia tables on top of the default
+/// schema. reth 2.0's `init_db` only creates upstream tables, so our custom
+/// `ParliaSnapshots` / `ParliaSnapshotsByHash` must be added explicitly before
+/// the provider can read/write them (otherwise we hit MDBX NOTFOUND).
+fn init_bsc_test_db(
+    path: &std::path::Path,
+) -> eyre::Result<Arc<reth_db::DatabaseEnv>> {
+    let mut db = init_db(path, DatabaseArguments::new(Default::default()))?;
+    db.create_and_track_tables_for::<ParliaTables>()?;
+    Ok(Arc::new(db))
+}
+
 /// Test snapshot database persistence and retrieval functionality
 #[test]
 fn test_snapshot_database_persistence() -> eyre::Result<()> {
@@ -17,7 +30,7 @@ fn test_snapshot_database_persistence() -> eyre::Result<()> {
     let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&db_path)?;
     
-    let database = Arc::new(init_db(&db_path, DatabaseArguments::new(Default::default()))?);
+    let database = init_bsc_test_db(&db_path)?;
     
     // Cleanup guard to ensure database is removed even if test fails
     let _cleanup_guard = TestCleanup { path: db_path.clone() };
@@ -71,7 +84,7 @@ fn test_snapshot_range_queries() -> eyre::Result<()> {
     let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&db_path)?;
     
-    let database = Arc::new(init_db(&db_path, DatabaseArguments::new(Default::default()))?);
+    let database = init_bsc_test_db(&db_path)?;
     let _cleanup_guard = TestCleanup { path: db_path.clone() };
     
     let provider = DbSnapshotProvider::new(database.clone(), 256);
@@ -132,7 +145,7 @@ fn test_direct_database_access() -> eyre::Result<()> {
     let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&db_path)?;
     
-    let database = Arc::new(init_db(&db_path, DatabaseArguments::new(Default::default()))?);
+    let database = init_bsc_test_db(&db_path)?;
     let _cleanup_guard = TestCleanup { path: db_path.clone() };
     
     let provider = DbSnapshotProvider::new(database.clone(), 256);
@@ -174,7 +187,7 @@ fn test_snapshot_cache_behavior() -> eyre::Result<()> {
     let db_path = std::env::temp_dir().join(format!("bsc_test_db_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&db_path)?;
     
-    let database = Arc::new(init_db(&db_path, DatabaseArguments::new(Default::default()))?);
+    let database = init_bsc_test_db(&db_path)?;
     let _cleanup_guard = TestCleanup { path: db_path.clone() };
     
     // Small cache size to test eviction
