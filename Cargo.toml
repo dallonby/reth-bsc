@@ -40,6 +40,8 @@ reth-ethereum = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0
 reth-cli = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
 reth-db = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
@@ -79,6 +81,9 @@ reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth.g
 # use reth-ethereum-primitives or reth-primitives-traits instead.
 # reth-primitives-traits is now published to crates.io as a separate crate.
 reth-primitives-traits = { version = "0.1", default-features = false }
+# Needed for `DecompressError` used by the custom `Decompress` impl on
+# `consensus::parlia::Snapshot`; paradigm reth 2.0 publishes this on crates.io.
+reth-codecs = { version = "0.1", default-features = false }
 reth-provider = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0", features = [
     "test-utils",
 ] }

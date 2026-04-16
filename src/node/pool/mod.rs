@@ -70,6 +70,7 @@ where
     V: TransactionValidator + Send + Sync + 'static,
 {
     type Transaction = <V as TransactionValidator>::Transaction;
+    type Block = <V as TransactionValidator>::Block;
 
     async fn validate_transaction(
         &self,
@@ -100,7 +101,10 @@ where
 
     async fn validate_transactions(
         &self,
-        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+        transactions: impl IntoIterator<
+            Item = (TransactionOrigin, Self::Transaction),
+            IntoIter: Send,
+        > + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let outcomes = self.inner.validate_transactions(transactions).await;
         let mut mapped: Vec<TransactionValidationOutcome<Self::Transaction>> =
@@ -142,10 +146,10 @@ where
         mapped
     }
 
-    fn on_new_head_block<B>(&self, new_tip_block: &reth_primitives_traits::SealedBlock<B>)
-    where
-        B: reth_primitives_traits::Block,
-    {
+    fn on_new_head_block(
+        &self,
+        new_tip_block: &reth_primitives_traits::SealedBlock<Self::Block>,
+    ) {
         if let Some(osaka_ts) = self.osaka_timestamp {
             self.osaka_activated.store(
                 new_tip_block.header().timestamp() >= osaka_ts,
@@ -161,7 +165,7 @@ where
 #[non_exhaustive]
 pub struct BscPoolBuilder;
 
-impl<Types, Node> PoolBuilder<Node> for BscPoolBuilder
+impl<Types, Node, Evm> PoolBuilder<Node, Evm> for BscPoolBuilder
 where
     Node: FullNodeTypes<Types = Types>,
     Types: NodeTypes<
@@ -172,6 +176,7 @@ where
     <Types as NodeTypes>::Payload: PayloadTypes,
     EthPooledTransaction<EthTxSigned>: reth_transaction_pool::EthPoolTransaction,
     EthPooledTransaction<EthTxSigned>: PoolTransaction,
+    Evm: Send,
 {
     type Pool = Pool<
         TransactionValidationTaskExecutor<
@@ -181,7 +186,11 @@ where
         DiskFileBlobStore,
     >;
 
-    async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
+    async fn build_pool(
+        self,
+        ctx: &BuilderContext<Node>,
+        _evm_config: Evm,
+    ) -> eyre::Result<Self::Pool> {
         let pool_config = ctx.pool_config();
 
         // Same as upstream: derive blob cache size based on time

@@ -15,7 +15,7 @@ use alloy_evm::Evm;
 use alloy_primitives::U256;
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
-use reth_ethereum::engine::EthPayloadBuilderAttributes;
+use crate::node::miner::attributes::BscPayloadBuilderAttributes;
 use reth_ethereum::pool::BestTransactionsAttributes;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
@@ -24,7 +24,6 @@ use reth_evm::execute::BlockBuilderOutcome;
 use reth_evm::execute::{BlockExecutionError, BlockValidationError};
 use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
 use reth_execution_types::BlockExecutionOutput;
-use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadBuilderError};
 use reth_primitives_traits::SealedHeader;
 use reth_ethereum_primitives::TransactionSigned;
@@ -308,7 +307,7 @@ where
         &self,
         _bid: &Bid,
         _validator_commission: u64,
-        attributes: EthPayloadBuilderAttributes,
+        attributes: BscPayloadBuilderAttributes,
         mining_ctx: MiningContext,
     ) -> Result<BidRuntime<Pool, BscEvmConfig>, Box<dyn std::error::Error + Send + Sync>> {
         let mut runtime = BidRuntime::new(
@@ -636,7 +635,7 @@ pub struct BidRuntime<Pool, EvmConfig = BscEvmConfig> {
     pool: Pool,
     evm_config: EvmConfig,
     parent_header: SealedHeader,
-    attributes: EthPayloadBuilderAttributes,
+    attributes: BscPayloadBuilderAttributes,
     builder_config: EthereumBuilderConfig,
     chain_spec: Arc<BscChainSpec>,
     pub bsc_payload: Option<BscBuiltPayload>,
@@ -666,7 +665,7 @@ where
         bid: Bid,
         pool: Pool,
         evm_config: EvmConfig,
-        attributes: EthPayloadBuilderAttributes,
+        attributes: BscPayloadBuilderAttributes,
         chain_spec: Arc<BscChainSpec>,
         mining_ctx: MiningContext,
     ) -> Self {

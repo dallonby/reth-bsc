@@ -151,10 +151,6 @@ impl NewBlockPayload for BscNewBlock {
     fn block(&self) -> &Self::Block {
         &self.0.block
     }
-
-    fn td(&self) -> Option<U256> {
-        Some(U256::from(self.0.td.to::<u128>()))
-    }
 }
 
 /// Network primitives for BSC.

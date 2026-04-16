@@ -1252,10 +1252,10 @@ where
     }
 
     fn spawn_workers(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.task_executor.spawn_critical("mev_work_worker", self.mev_work_worker.run());
-        self.task_executor.spawn_critical("new_work_worker", self.new_work_worker.run());
-        self.task_executor.spawn_critical("main_work_worker", self.main_work_worker.run());
-        self.task_executor.spawn_critical("result_work_worker", self.result_work_worker.run());
+        self.task_executor.spawn_critical_task("mev_work_worker", self.mev_work_worker.run());
+        self.task_executor.spawn_critical_task("new_work_worker", self.new_work_worker.run());
+        self.task_executor.spawn_critical_task("main_work_worker", self.main_work_worker.run());
+        self.task_executor.spawn_critical_task("result_work_worker", self.result_work_worker.run());
         info!("Succeed to start mining, address: {}", self.validator_address);
         Ok(())
     }

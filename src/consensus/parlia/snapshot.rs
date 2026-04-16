@@ -452,8 +452,8 @@ impl Compress for Snapshot {
 }
 
 impl Decompress for Snapshot {
-    fn decompress(value: &[u8]) -> Result<Self, DatabaseError> {
-        serde_cbor::from_slice(value).map_err(|_| DatabaseError::Decode)
+    fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
+        serde_cbor::from_slice(value).map_err(reth_codecs::DecompressError::new)
     }
 }
 

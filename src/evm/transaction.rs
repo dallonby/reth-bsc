@@ -126,10 +126,6 @@ impl TransactionEnvMut for BscTxEnv {
         self.base.set_gas_limit(gas_limit);
     }
 
-    fn nonce(&self) -> u64 {
-        TransactionEnvMut::nonce(&self.base)
-    }
-
     fn set_nonce(&mut self, nonce: u64) {
         self.base.set_nonce(nonce);
     }

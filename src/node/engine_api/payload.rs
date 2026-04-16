@@ -1,6 +1,4 @@
 use crate::node::{engine::BscBuiltPayload, engine_api::validator::BscExecutionData};
-use alloy_eips::eip4895::Withdrawals;
-use reth_ethereum::engine::EthPayloadBuilderAttributes;
 use reth_primitives_traits::{NodePrimitives, SealedBlock};
 use reth_node_ethereum::engine::EthPayloadAttributes;
 use reth_payload_primitives::{BuiltPayload, PayloadTypes};
@@ -13,7 +11,6 @@ pub struct BscPayloadTypes;
 impl PayloadTypes for BscPayloadTypes {
     type BuiltPayload = BscBuiltPayload;
     type PayloadAttributes = EthPayloadAttributes;
-    type PayloadBuilderAttributes = EthPayloadBuilderAttributes;
     type ExecutionData = BscExecutionData;
 
     fn block_to_payload(
