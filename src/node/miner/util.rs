@@ -11,7 +11,7 @@ use crate::node::miner::bsc_miner::MiningContext;
 use crate::node::miner::signer::{seal_header_with_global_signer, SignerError};
 use alloy_consensus::Header;
 use alloy_primitives::{Address, Bytes, B256};
-use reth::payload::EthPayloadBuilderAttributes;
+use reth_ethereum::engine::EthPayloadBuilderAttributes;
 use reth_chainspec::EthChainSpec;
 use std::sync::Arc;
 

@@ -5,9 +5,9 @@ use std::sync::{
 
 use alloy_consensus::{BlockHeader, Transaction};
 use alloy_eips::merge::EPOCH_SLOTS;
-use reth::api::FullNodeTypes;
-use reth::api::{NodePrimitives, NodeTypes};
-use reth::builder::{
+use reth_ethereum::node::api::FullNodeTypes;
+use reth_ethereum::node::api::{NodePrimitives, NodeTypes};
+use reth_ethereum::node::builder::{
     components::{create_blob_store_with_cache, PoolBuilder, TxPoolBuilder},
     BuilderContext,
 };

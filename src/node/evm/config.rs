@@ -26,7 +26,8 @@ use reth_evm::{
     FromRecoveredTx, FromTxWithEncoded, InspectorFor, IntoTxEnv, NextBlockEnvAttributes,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_primitives::{BlockTy, HeaderTy, SealedBlock, SealedHeader, TransactionSigned};
+use reth_ethereum_primitives::{TransactionSigned};
+use reth_primitives_traits::{BlockTy, HeaderTy, SealedBlock, SealedHeader};
 use reth_primitives_traits::constants::MAX_TX_GAS_LIMIT_OSAKA;
 use reth_revm::State;
 use revm::{

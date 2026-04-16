@@ -15,8 +15,8 @@ use alloy_evm::Evm;
 use alloy_primitives::U256;
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
-use reth::payload::EthPayloadBuilderAttributes;
-use reth::transaction_pool::BestTransactionsAttributes;
+use reth_ethereum::engine::EthPayloadBuilderAttributes;
+use reth_ethereum::pool::BestTransactionsAttributes;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
 use reth_evm::execute::BlockBuilder;
@@ -26,8 +26,8 @@ use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadBuilderError};
-use reth_primitives::SealedHeader;
-use reth_primitives::TransactionSigned;
+use reth_primitives_traits::SealedHeader;
+use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::SignerRecoverable;
 use reth_provider::StateProviderFactory;
 use reth_provider::{BlockHashReader, HeaderProvider};
@@ -47,7 +47,7 @@ pub struct Bid {
     pub builder: Address,
     pub block_number: u64,
     pub parent_hash: B256,
-    pub txs: Vec<reth_primitives::TransactionSigned>,
+    pub txs: Vec<reth_ethereum_primitives::TransactionSigned>,
     pub blob_sidecars: HashMap<B256, BlobTransactionSidecar>,
     pub un_revertible: Vec<B256>,
     pub gas_used: u64,
@@ -100,8 +100,8 @@ where
         + StateProviderFactory
         + Clone
         + 'static,
-    Pool: reth::transaction_pool::TransactionPool<
-            Transaction: reth::transaction_pool::PoolTransaction<Consensus = TransactionSigned>,
+    Pool: reth_ethereum::pool::TransactionPool<
+            Transaction: reth_ethereum::pool::PoolTransaction<Consensus = TransactionSigned>,
         > + 'static,
 {
     pub fn new(
@@ -651,8 +651,8 @@ pub struct BidRuntime<Pool, EvmConfig = BscEvmConfig> {
 
 impl<Pool, EvmConfig> BidRuntime<Pool, EvmConfig>
 where
-    Pool: reth::transaction_pool::TransactionPool<
-            Transaction: reth::transaction_pool::PoolTransaction<Consensus = TransactionSigned>,
+    Pool: reth_ethereum::pool::TransactionPool<
+            Transaction: reth_ethereum::pool::PoolTransaction<Consensus = TransactionSigned>,
         > + Clone
         + 'static,
     EvmConfig: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes> + 'static,
@@ -892,7 +892,7 @@ where
     fn fill_tx_from_pool<B>(
         &mut self,
         builder: &mut B,
-        bid_txs: Vec<reth_primitives::TransactionSigned>,
+        bid_txs: Vec<reth_ethereum_primitives::TransactionSigned>,
         block_gas_limit: u64,
         delay_ms: u64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -932,7 +932,7 @@ where
 
         let mut sender_txs_map: HashMap<
             Address,
-            Vec<Arc<reth::transaction_pool::ValidPoolTransaction<Pool::Transaction>>>,
+            Vec<Arc<reth_ethereum::pool::ValidPoolTransaction<Pool::Transaction>>>,
         > = HashMap::new();
 
         for pool_tx in best_tx_list {

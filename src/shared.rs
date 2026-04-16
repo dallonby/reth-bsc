@@ -7,7 +7,7 @@ use alloy_consensus::{BlockHeader, Header};
 use alloy_rlp::Encodable;
 use alloy_eips::BlockId;
 use alloy_primitives::{B256, Bytes, U256};
-use reth_primitives::TransactionSigned;
+use reth_ethereum_primitives::TransactionSigned;
 use parking_lot::Mutex;
 use reth_network::NetworkHandle;
 use reth_network_api::PeerId;

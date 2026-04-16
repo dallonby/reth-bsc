@@ -12,7 +12,7 @@ use crate::{
 };
 use alloy_primitives::{Address, Bytes};
 
-use reth::{
+use reth_ethereum::node::{
     api::{FullNodeTypes, NodeTypes},
     builder::{components::ExecutorBuilder, BuilderContext},
 };

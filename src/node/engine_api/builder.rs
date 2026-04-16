@@ -1,5 +1,5 @@
 use super::BscEngineApi;
-use reth::{
+use reth_ethereum::node::{
     api::{AddOnsContext, FullNodeComponents, NodeTypes},
     builder::rpc::EngineApiBuilder,
 };

@@ -26,14 +26,15 @@ use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, Sealable, U128};
 use k256::ecdsa::SigningKey;
 use lru::LruCache;
-use reth::transaction_pool::PoolTransaction;
-use reth::transaction_pool::TransactionPool;
+use reth_ethereum::pool::PoolTransaction;
+use reth_ethereum::pool::TransactionPool;
 use reth_basic_payload_builder::{PayloadConfig, PrecachedState};
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
 use reth_network::message::NewBlockMessage;
 use reth_payload_primitives::BuiltPayload;
-use reth_primitives::{SealedHeader, TransactionSigned};
+use reth_ethereum_primitives::{TransactionSigned};
+use reth_primitives_traits::{SealedHeader};
 use reth_primitives_traits::BlockBody;
 use reth_provider::{
     BlockNumReader, CanonStateNotification, CanonStateSubscriptions, HeaderProvider,
@@ -55,8 +56,8 @@ const RECENT_MINED_BLOCKS_CACHE_SIZE: usize = 100;
 
 #[derive(Clone, Debug)]
 pub struct MiningContext {
-    pub header: Option<reth_primitives::Header>, // tmp header for payload building.
-    pub parent_header: reth_primitives::SealedHeader,
+    pub header: Option<alloy_consensus::Header>, // tmp header for payload building.
+    pub parent_header: reth_primitives_traits::SealedHeader,
     pub parent_snapshot: Arc<crate::consensus::parlia::snapshot::Snapshot>,
     pub is_inturn: bool,
     pub cached_reads: Option<reth_revm::cached::CachedReads>,
@@ -245,8 +246,8 @@ where
     /// - `Err(error)` - Validation failed (engine not initialized or headers unavailable), error contains reason
     async fn validate_reorg<N>(
         &self,
-        old: &Arc<reth::providers::Chain<N>>,
-        new: &Arc<reth::providers::Chain<N>>,
+        old: &Arc<reth_ethereum::provider::Chain<N>>,
+        new: &Arc<reth_ethereum::provider::Chain<N>>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>
     where
         N: reth_primitives_traits::NodePrimitives,
@@ -311,7 +312,7 @@ where
         }
     }
 
-    fn get_tip_header_at_startup(&self) -> Option<reth_primitives::SealedHeader> {
+    fn get_tip_header_at_startup(&self) -> Option<reth_primitives_traits::SealedHeader> {
         let best_number = self.provider.best_block_number().ok()?;
         let tip_header = self.provider.sealed_header(best_number).ok()??;
         Some(tip_header)
@@ -324,7 +325,7 @@ where
     fn cache_for_next(
         &mut self,
         committed: &Arc<
-            reth::providers::Chain<<Provider as reth_provider::NodePrimitivesProvider>::Primitives>,
+            reth_ethereum::provider::Chain<<Provider as reth_provider::NodePrimitivesProvider>::Primitives>,
         >,
     ) {
         // Build pre-cache from execution outcome

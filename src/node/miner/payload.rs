@@ -12,11 +12,11 @@ use crate::node::primitives::BscBlobTransactionSidecar;
 use alloy_consensus::{BlockHeader, Transaction};
 use alloy_evm::Evm;
 use alloy_primitives::U256;
-use reth::payload::EthPayloadBuilderAttributes;
-use reth::transaction_pool::error::Eip4844PoolTransactionError;
-use reth::transaction_pool::error::InvalidPoolTransactionError;
-use reth::transaction_pool::BestTransactionsAttributes;
-use reth::transaction_pool::{PoolTransaction, TransactionPool};
+use reth_ethereum::engine::EthPayloadBuilderAttributes;
+use reth_ethereum::pool::error::Eip4844PoolTransactionError;
+use reth_ethereum::pool::error::InvalidPoolTransactionError;
+use reth_ethereum::pool::BestTransactionsAttributes;
+use reth_ethereum::pool::{PoolTransaction, TransactionPool};
 use reth_basic_payload_builder::PayloadConfig;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
@@ -27,9 +27,9 @@ use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock, PayloadBuilderError};
-use reth_primitives::HeaderTy;
-use reth_primitives::InvalidTransactionError;
-use reth_primitives::TransactionSigned;
+use reth_primitives_traits::HeaderTy;
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
+use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::{BlockBody, SignerRecoverable};
 use reth_provider::StateProviderFactory;
 use reth_revm::cached::CachedReads;
@@ -1333,7 +1333,7 @@ mod tests {
     use alloy_eips::eip7594::{
         BlobTransactionSidecarEip7594, BlobTransactionSidecarVariant, CELLS_PER_EXT_BLOB,
     };
-    use reth::transaction_pool::error::Eip4844PoolTransactionError;
+    use reth_ethereum::pool::error::Eip4844PoolTransactionError;
 
     #[test]
     fn bsc_sidecar_accepts_eip4844() {

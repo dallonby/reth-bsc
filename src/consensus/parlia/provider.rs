@@ -21,7 +21,6 @@ pub struct ValidatorsInfo {
 
 use reth_db::{Database, DatabaseError};
 use reth_db::table::{Compress, Decompress};
-use reth_db::models::ParliaSnapshotBlob;
 use reth_db::transaction::{DbTx, DbTxMut};
 use schnellru::{ByLength, LruMap};
 
@@ -108,7 +107,7 @@ impl<DB: Database> DbSnapshotProvider<DB> {
 
     fn persist_to_db(&self, snap: &Snapshot) -> Result<(), DatabaseError> {
         let tx = self.db.tx_mut()?;
-        tx.put::<crate::consensus::parlia::db::ParliaSnapshotsByHash>(snap.block_hash, ParliaSnapshotBlob(snap.clone().compress()))?;
+        tx.put::<crate::consensus::parlia::db::ParliaSnapshotsByHash>(snap.block_hash, snap.clone())?;
         tx.commit()?;
         tracing::debug!("Succeed to insert snapshot to db, block_number: {}, block_hash: {}", snap.block_number, snap.block_hash);
         Ok(())

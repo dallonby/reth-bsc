@@ -1,5 +1,5 @@
 use clap::{Args, Parser};
-use reth::{builder::NodeHandle, cli::Cli, consensus::FullConsensus};
+use reth_ethereum::{cli::Cli, consensus::FullConsensus, node::builder::NodeHandle};
 use reth_bsc::node::consensus::BscConsensus;
 use reth_bsc::{
     chainspec::{parser::BscChainSpecParser, genesis_override},

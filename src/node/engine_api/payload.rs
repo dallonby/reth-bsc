@@ -1,8 +1,7 @@
 use crate::node::{engine::BscBuiltPayload, engine_api::validator::BscExecutionData};
-use reth::{
-    payload::EthPayloadBuilderAttributes,
-    primitives::{NodePrimitives, SealedBlock},
-};
+use alloy_eips::eip4895::Withdrawals;
+use reth_ethereum::engine::EthPayloadBuilderAttributes;
+use reth_primitives_traits::{NodePrimitives, SealedBlock};
 use reth_node_ethereum::engine::EthPayloadAttributes;
 use reth_payload_primitives::{BuiltPayload, PayloadTypes};
 

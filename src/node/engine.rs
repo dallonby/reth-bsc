@@ -8,17 +8,20 @@ use crate::{
 };
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::U256;
-use reth::transaction_pool::PoolTransaction;
-use reth::{
-    api::FullNodeTypes,
-    builder::{components::PayloadServiceBuilder, BuilderContext},
-    payload::{PayloadBuilderHandle, PayloadServiceCommand},
-    transaction_pool::TransactionPool,
+use reth_ethereum::pool::PoolTransaction;
+use reth_ethereum::{
+    node::{
+        api::FullNodeTypes,
+        builder::{components::PayloadServiceBuilder, BuilderContext},
+    },
+    pool::TransactionPool,
 };
+use reth_payload_builder::{PayloadBuilderHandle, PayloadServiceCommand};
 use reth_evm::ConfigureEvm;
 use reth_payload_builder_primitives::Events;
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
-use reth_primitives::{SealedBlock, TransactionSigned};
+use reth_ethereum_primitives::{TransactionSigned};
+use reth_primitives_traits::{SealedBlock};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};

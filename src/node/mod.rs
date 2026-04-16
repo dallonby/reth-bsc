@@ -11,25 +11,26 @@ use consensus::BscConsensusBuilder;
 use engine::BscPayloadServiceBuilder;
 use evm::BscExecutorBuilder;
 use network::BscNetworkBuilder;
-use reth::{
-    api::{FullNodeComponents, FullNodeTypes, HeaderTy, NodeTypes, PrimitivesTy},
-    builder::rpc::EthApiCtx,
-    builder::{
-        components::ComponentsBuilder,
-        rpc::{EthApiBuilder, RpcAddOns, RpcContext},
-        DebugNode, Node, NodeAdapter,
+use reth_ethereum::{
+    node::{
+        api::{FullNodeComponents, FullNodeTypes, HeaderTy, NodeTypes, PrimitivesTy},
+        builder::{
+            components::ComponentsBuilder,
+            rpc::{EngineApiBuilder, EthApiBuilder, EthApiCtx, RpcAddOns, RpcContext},
+            DebugNode, Node, NodeAdapter,
+        },
     },
     rpc::eth::core::{EthApiFor, EthRpcConverterFor},
 };
 use reth_chainspec::{EthereumHardforks, Hardforks};
 use reth_evm::ConfigureEvm;
-use reth::rpc::server_types::eth::EthApiError;
+use reth_ethereum::rpc::eth::EthApiError;
 use reth_rpc_eth_api::{helpers::pending_block::BuildPendingEnv, RpcConvert, FromEvmError};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_engine_primitives::ConsensusEngineHandle;
 
 use reth_payload_primitives::{PayloadAttributesBuilder, PayloadTypes};
-use reth_primitives::BlockBody;
+use reth_ethereum_primitives::BlockBody;
 use reth_rpc_eth_api::helpers::config::{EthConfigApiServer, EthConfigHandler};
 use reth_rpc_server_types::RethRpcModule;
 use std::sync::Arc;

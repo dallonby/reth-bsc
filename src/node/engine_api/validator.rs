@@ -4,17 +4,19 @@ use alloy_consensus::BlockHeader;
 use alloy_eips::eip4895::Withdrawal;
 use alloy_primitives::{Bytes, B256};
 use alloy_rpc_types_engine::PayloadError;
-use reth::{
-    api::{FullNodeComponents, NodeTypes},
-    builder::{
-        rpc::{BasicEngineValidatorBuilder, PayloadValidatorBuilder},
-        AddOnsContext,
-    },
+use reth_ethereum::{
     consensus::ConsensusError,
+    node::{
+        api::{FullNodeComponents, NodeTypes},
+        builder::{
+            rpc::{BasicEngineValidatorBuilder, PayloadValidatorBuilder},
+            AddOnsContext,
+        },
+    },
 };
 use reth_engine_primitives::{ExecutionPayload, PayloadValidator};
 use reth_payload_primitives::NewPayloadError;
-use reth_primitives::{RecoveredBlock, SealedBlock};
+use reth_primitives_traits::{RecoveredBlock, SealedBlock};
 use reth_primitives_traits::Block;
 use reth_trie_common::HashedPostState;
 use serde::{Deserialize, Serialize};

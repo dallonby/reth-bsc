@@ -1,5 +1,5 @@
 use jsonrpsee::RpcModule;
-use reth::rpc::api::IntoEngineApiRpcModule;
+use reth_ethereum::rpc::api::IntoEngineApiRpcModule;
 use reth_engine_primitives::ConsensusEngineHandle;
 use std::sync::Arc;
 
