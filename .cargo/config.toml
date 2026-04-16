@@ -1,0 +1,20 @@
+# Build settings tuned for running reth-bsc on the same box you build on.
+#
+# `target-cpu=native` bakes the host CPU's full ISA (AVX2, AVX-512, BMI2,
+# ADX, PCLMULQDQ, AES-NI, SHA extensions where available, etc.) into the
+# generated code. This matters for:
+#   * libsecp256k1 and alloy keccak/sha3 paths
+#   * revm's EVM opcode dispatch and bigint math
+#   * MDBX's internal CRC / hashing
+#   * our BLS precompile's pairing / hash-to-curve routines
+#
+# Trade-off: the resulting binary is tied to this machine's CPU family —
+# not suitable for distributing across a heterogeneous fleet. For that
+# case, comment these out or replace with `target-cpu=x86-64-v3` (BMI2 +
+# AVX2 baseline, compatible with ~Haswell onward).
+#
+# To override at build time without editing this file:
+#   RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
+
+[build]
+rustflags = ["-C", "target-cpu=native"]

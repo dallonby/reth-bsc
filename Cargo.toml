@@ -197,7 +197,11 @@ tikv-jemallocator = { version = "0.6", optional = true }
 libc = "0.2"
 
 [features]
-default = ["jemalloc"]
+# asm-keccak wins ~15-25% on every Keccak-256 call (storage reads, log
+# bloom, tx hashing, trie root compute) on x86_64 machines that have
+# SHA-NI. On non-x86 hosts or hosts without SHA-NI the feature is still
+# safe — alloy-primitives falls back to the C/pure-Rust implementation.
+default = ["jemalloc", "asm-keccak"]
 jemalloc = ["dep:tikv-jemallocator"]
 dev = ["reth-cli-commands/arbitrary", "revm/dev"]
 asm-keccak = [
