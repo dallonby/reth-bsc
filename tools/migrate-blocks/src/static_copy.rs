@@ -258,11 +258,18 @@ fn copy_file(src: &Path, dst: &Path) -> eyre::Result<u64> {
 }
 
 /// Issue `copy_file_range(2)` for an explicit [offset, offset+len) range on
-/// both sides. Loops to handle short returns (kernel is allowed to copy
-/// fewer bytes than requested per call).
-fn copy_range_exact(src_fd: i32, dst_fd: i32, start: u64, mut remaining: u64) -> io::Result<()> {
+/// both sides. If the kernel returns `EXDEV` (source and dest on different
+/// filesystems — `copy_file_range` cannot bridge them without a filesystem
+/// driver that supports it), transparently fall back to [`splice_range_exact`]
+/// which routes through a pipe in-kernel and works across any fs combo.
+///
+/// Other short returns are handled by looping until the full range is copied
+/// (the kernel is always allowed to report fewer bytes than we asked for).
+fn copy_range_exact(src_fd: i32, dst_fd: i32, start: u64, remaining: u64) -> io::Result<()> {
     let mut src_off = start as libc::off64_t;
     let mut dst_off = start as libc::off64_t;
+    let mut remaining = remaining;
+
     while remaining > 0 {
         // SAFETY: fds are valid for the lifetime of the caller's File
         // handles; offsets are in-range; len is size_t.
@@ -277,7 +284,17 @@ fn copy_range_exact(src_fd: i32, dst_fd: i32, start: u64, mut remaining: u64) ->
             )
         };
         if ret < 0 {
-            return Err(io::Error::last_os_error());
+            let err = io::Error::last_os_error();
+            // Common reasons to fall back:
+            //  EXDEV  — cross-fs (we hit this on XFS-LVM → XFS-root)
+            //  EINVAL — some fs drivers reject copy_file_range
+            //  ENOSYS — older kernel
+            if matches!(err.raw_os_error(), Some(libc::EXDEV) | Some(libc::EINVAL) | Some(libc::ENOSYS)) {
+                // `src_off` / `dst_off` have been updated to reflect any
+                // partial copy that already succeeded in prior iterations.
+                return splice_range_exact(src_fd, dst_fd, src_off as u64, dst_off as u64, remaining);
+            }
+            return Err(err);
         }
         if ret == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "copy_file_range EOF"));
@@ -285,6 +302,97 @@ fn copy_range_exact(src_fd: i32, dst_fd: i32, start: u64, mut remaining: u64) ->
         remaining = remaining.saturating_sub(ret as u64);
     }
     Ok(())
+}
+
+/// Cross-filesystem fallback using `splice(2)` through an anonymous pipe.
+/// Works across every Linux fs combo: splice pumps bytes source → pipe
+/// (zero-copy where the fs supports page pinning) then pipe → dest (same).
+/// We use a single pipe per call and keep it tight (16 MiB) — the kernel's
+/// pipe buffer is the natural backpressure mechanism.
+fn splice_range_exact(
+    src_fd: i32,
+    dst_fd: i32,
+    mut src_off: u64,
+    mut dst_off: u64,
+    mut remaining: u64,
+) -> io::Result<()> {
+    // Create an O_CLOEXEC pipe dedicated to this splice chain.
+    let mut pipe_fds: [libc::c_int; 2] = [-1, -1];
+    // SAFETY: pipe2 initializes both fds on success.
+    let rc = unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (pipe_r, pipe_w) = (pipe_fds[0], pipe_fds[1]);
+
+    // Bump pipe capacity to reduce context-switch overhead. 16 MiB is the
+    // standard large-pipe size; root usually gets it without sysctl tuning.
+    unsafe {
+        let _ = libc::fcntl(pipe_w, libc::F_SETPIPE_SZ, 1 << 24);
+    }
+
+    let result = (|| -> io::Result<()> {
+        while remaining > 0 {
+            // src -> pipe
+            let to_pipe = {
+                let mut off = src_off as libc::off64_t;
+                // SAFETY: fds are valid; off is valid; nr bytes fits usize.
+                let ret = unsafe {
+                    libc::splice(
+                        src_fd,
+                        &mut off,
+                        pipe_w,
+                        std::ptr::null_mut(),
+                        remaining as usize,
+                        libc::SPLICE_F_MOVE | libc::SPLICE_F_MORE,
+                    )
+                };
+                if ret < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if ret == 0 {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "splice src EOF"));
+                }
+                src_off = off as u64;
+                ret as usize
+            };
+
+            // pipe -> dst
+            let mut drained = 0usize;
+            while drained < to_pipe {
+                let mut off = dst_off as libc::off64_t;
+                // SAFETY: as above.
+                let ret = unsafe {
+                    libc::splice(
+                        pipe_r,
+                        std::ptr::null_mut(),
+                        dst_fd,
+                        &mut off,
+                        to_pipe - drained,
+                        libc::SPLICE_F_MOVE | libc::SPLICE_F_MORE,
+                    )
+                };
+                if ret < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if ret == 0 {
+                    return Err(io::Error::new(io::ErrorKind::WriteZero, "splice dst short"));
+                }
+                drained += ret as usize;
+                dst_off = off as u64;
+            }
+
+            remaining = remaining.saturating_sub(to_pipe as u64);
+        }
+        Ok(())
+    })();
+
+    // Always reap the pipe fds, even on error.
+    unsafe {
+        libc::close(pipe_r);
+        libc::close(pipe_w);
+    }
+    result
 }
 
 /// Best-effort preallocation. Silently ignores any failure because this is
