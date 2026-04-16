@@ -1,0 +1,36 @@
+[package]
+name = "reth-bsc-migrate-blocks"
+version = "0.1.0"
+edition = "2021"
+description = "Migrate Headers + Bodies + Transactions + Senders from a reth v0.0.8 BSC datadir into a paradigm reth v2.0.0 datadir without re-downloading. Sets StageCheckpoints so the target node resumes with Execution from genesis."
+
+[[bin]]
+name = "reth-bsc-migrate-blocks"
+path = "src/main.rs"
+
+[dependencies]
+# v2 side — we write through these crates.
+reth_bsc = { path = "../.." }
+reth-db = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
+reth-libmdbx = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
+reth-stages-types = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
+
+# alloy — stable primitives; used for the RLP bridge between v1/v2 tx encodings.
+alloy-consensus = "1.8"
+alloy-eips = "1.8"
+alloy-primitives = "1.5"
+alloy-rlp = "0.3"
+
+# Orchestration.
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+eyre = "0.6"
+parking_lot = "0.12"
+rayon = "1.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints.rust]
+unused_must_use = "deny"

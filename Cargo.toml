@@ -1,5 +1,5 @@
 [workspace]
-members = ["."]
+members = [".", "tools/migrate-blocks"]
 # TODO(reth-2.0 upgrade): testing/bsc-ef-tests is temporarily excluded until the
 # main crate compiles against reth 2.0. See task: port bsc-ef-tests to reth 2.0.
 exclude = ["testing/bsc-ef-tests"]

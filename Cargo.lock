@@ -6966,6 +6966,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-bsc-migrate-blocks"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "clap",
+ "crossbeam-channel",
+ "eyre",
+ "parking_lot",
+ "rayon",
+ "reth-db",
+ "reth-db-api",
+ "reth-ethereum-primitives",
+ "reth-libmdbx",
+ "reth-stages-types",
+ "reth_bsc",
+ "tracing",
+ "tracing-subscriber 0.3.22",
+]
+
+[[package]]
 name = "reth-chain-state"
 version = "2.0.0"
 source = "git+https://github.com/paradigmxyz/reth.git?tag=v2.0.0#eb4c15e5e36d8776d46629beae4c0a69af7ab04f"
@@ -11839,9 +11862,11 @@ dependencies = [
  "serde",
  "serde_json",
  "sharded-slab",
+ "smallvec",
  "thread_local",
  "tracing",
  "tracing-core",
+ "tracing-log",
  "tracing-serde",
 ]
 
