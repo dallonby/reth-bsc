@@ -355,13 +355,13 @@ impl BscNetworkBuilder {
         }
 
         let provider = ctx.provider();
-        if let Ok(_number) = provider.best_block_number() {
-            // reth 2.0 dropped HeaderProvider::header_td_by_number; UnifiedStatus
-            // also made total_difficulty an Option (eth/66–68 only). Until the
-            // BSC TD accumulator (project memo) is wired up, advertise None — peers
-            // on eth/69 will see the same. Required to be replaced before BSC's
-            // TD-sensitive vote-broadcast logic re-enables.
-            network_config.status.total_difficulty = None;
+        if let Ok(number) = provider.best_block_number() {
+            // reth 2.0 dropped HeaderProvider::header_td_by_number; we source
+            // TD from our local accumulator (crate::consensus::parlia::td_store).
+            // None until the first canonical TD is recorded — matches eth/69
+            // peers that don't advertise TD at all.
+            network_config.status.total_difficulty =
+                crate::consensus::parlia::td_store::TdStore::best_by_number(number);
         }
         debug!(
             target: "bsc::net",

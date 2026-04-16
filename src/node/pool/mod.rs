@@ -221,6 +221,10 @@ where
         };
 
         let blob_store = create_blob_store_with_cache(ctx, blob_cache_size)?;
+        // Stash a clone of the blob store so the MEV bid simulator can insert
+        // sidecars directly (reth 2.0 removed `Pool::insert_blob` from the
+        // `TransactionPool` trait; see crate::shared::set_blob_store).
+        let _ = crate::shared::set_blob_store(blob_store.clone());
 
         // Build default Ethereum validator executor
         // BSC rejected EIP-7594 (PeerDAS), so we disable EIP-7594 sidecar support to always

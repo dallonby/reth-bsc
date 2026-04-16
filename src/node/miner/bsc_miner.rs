@@ -1003,14 +1003,16 @@ where
 
         // TODO: wait more times when huge chain import.
         // Note: sidechain blocks are already filtered by parent canonical check above.
-        // reth 2.0 removed HeaderProvider::header_td_by_number. The local TD
-        // accumulator (project memo) isn't built yet, so we fall back to the
-        // current header's difficulty alone. This is wrong for accumulated TD
-        // broadcast, but BSC peers only use it for relay-priority heuristics —
-        // it MUST be replaced before TD-based chain selection is meaningful.
-        let _ = parent_number;
+        // reth 2.0 removed HeaderProvider::header_td_by_number; we read from
+        // our local TD accumulator (crate::consensus::parlia::td_store). If
+        // the parent hasn't been validated yet (rare race during init), fall
+        // back to the current header's difficulty alone — peers use new_td
+        // for relay-priority heuristics so a slight underestimate on startup
+        // is acceptable.
+        let parent_td = crate::consensus::parlia::td_store::TdStore::best_by_number(parent_number)
+            .unwrap_or_default();
         let current_difficulty = sealed_block.header().difficulty();
-        let new_td = current_difficulty;
+        let new_td = parent_td + current_difficulty;
 
         let td = U128::from(new_td.to::<u128>());
         let new_block =

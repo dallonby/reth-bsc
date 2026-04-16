@@ -332,8 +332,27 @@ fn main() -> eyre::Result<()> {
             }
 
             let (node, engine_handle_tx) = BscNode::new();
+            let mut builder = builder.node(node);
+
+            // Register BSC's custom Parlia tables on top of the default schema.
+            // reth 2.0's `init_db` only creates the tables in the upstream `Tables`
+            // enum; without this the first snapshot read would hit MDBX NOTFOUND.
+            reth_bsc::consensus::parlia::db::ensure_parlia_tables(builder.db_mut())
+                .map_err(|e| eyre::eyre!("failed to create Parlia tables: {e}"))?;
+            tracing::info!(target: "bsc::init", "ensured Parlia snapshot tables exist");
+
+            // Seed the local TD accumulator. Replaces the removed
+            // HeaderProvider::header_td* / ConsensusEngineHandle::query_td APIs
+            // that BSC still needs for Parlia fork-choice and vote-broadcast
+            // gating. The store clones the DatabaseEnv (internally Arc'd) and
+            // records td = parent_td + difficulty for each validated header.
+            reth_bsc::consensus::parlia::td_store::TdStore::init(builder.db().clone());
+            // Genesis seeding is deferred until after the provider is set on
+            // shared (needs canonical header lookup); we do it in on_node_started.
+            tracing::info!(target: "bsc::init", "TD accumulator initialized");
+
             let NodeHandle { node, node_exit_future: exit_future } =
-                builder.node(node)
+                builder
                     .extend_rpc_modules(move |ctx| {
                         tracing::info!("Start to register Parlia RPC API...");
                         use reth_bsc::rpc::parlia::{ParliaApiImpl, ParliaApiServer, DynSnapshotProvider};
@@ -386,6 +405,29 @@ fn main() -> eyre::Result<()> {
 
             // Set the IPC client
             reth_bsc::shared::set_ipc_client(ipc_path).await.unwrap();
+
+            // reth 2.0 removed NetworkConfigBuilder::proxied_peers, so BSC's
+            // proxied peers don't get auto-added by the upstream peer manager.
+            // Mark them as trusted after launch so the peer manager won't drop
+            // them during churn; our BSC registry already uses the list for
+            // vote-broadcast gating.
+            if let Some(proxyed_peer_ids) = reth_bsc::shared::get_proxyed_peer_ids() {
+                use reth_network::NetworkHandle;
+                use reth_network_api::Peers;
+                // Downcast the dyn network handle to the concrete reth one so
+                // we can call the Peers trait. BscNode uses the default reth
+                // network, so this is always Some(_).
+                let network: &NetworkHandle<reth_bsc::node::network::BscNetworkPrimitives> =
+                    &node.network;
+                for id in proxyed_peer_ids {
+                    network.add_trusted_peer_id(*id);
+                }
+                tracing::info!(
+                    target: "bsc::init",
+                    count = proxyed_peer_ids.len(),
+                    "added proxied peers as trusted peer IDs"
+                );
+            }
 
             exit_future.await
         },

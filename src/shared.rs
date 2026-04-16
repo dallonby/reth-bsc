@@ -77,6 +77,43 @@ static MEV_RUNNING: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 /// Global proxyed peer IDs list
 static PROXYED_PEER_IDS: OnceLock<Vec<PeerId>> = OnceLock::new();
 
+// Blob store handle from the transaction pool, stashed here so the MEV bid
+// simulator can insert blob sidecars from replayed bids. reth 2.0 made
+// `Pool::insert_blob` a private method on the concrete `Pool<V,T,S>` struct
+// (not on the `TransactionPool` trait), so downstream code that only sees the
+// trait can no longer reach it. Stashing the concrete blob store here is the
+// minimum-invasive fix.
+static BLOB_STORE: OnceLock<reth_transaction_pool::blobstore::DiskFileBlobStore> =
+    OnceLock::new();
+
+/// Register the pool's blob store. Called once from `BscPoolBuilder::build_pool`.
+pub fn set_blob_store(
+    store: reth_transaction_pool::blobstore::DiskFileBlobStore,
+) -> Result<(), reth_transaction_pool::blobstore::DiskFileBlobStore> {
+    BLOB_STORE.set(store)
+}
+
+/// Access the pool's blob store if initialized.
+pub fn get_blob_store() -> Option<&'static reth_transaction_pool::blobstore::DiskFileBlobStore> {
+    BLOB_STORE.get()
+}
+
+/// Current Parlia validator-set size, computed from the latest snapshot.
+///
+/// The bnb-chain fork piped this into reth's `EthApiBuilder` via a
+/// `with_current_validators_len` hook for use inside the EthApi. reth 2.0
+/// dropped that hook; we expose the same lookup here so BSC-specific RPCs
+/// and internal consumers that need the value can call it directly. Returns
+/// `None` until the snapshot provider and canonical-header provider are both
+/// initialized, mirroring the bnb-chain behavior when a consumer queried
+/// before the first sealed block.
+pub fn current_validators_len() -> Option<usize> {
+    let best_block = get_best_canonical_block_number()?;
+    let header = get_canonical_header_by_number(best_block)?;
+    let snapshot_provider = get_snapshot_provider()?;
+    Some(snapshot_provider.snapshot_by_hash(&header.hash_slow())?.validators.len())
+}
+
 /// Set global imported blocks broadcast sender.
 pub fn set_imported_blocks_tx(tx: broadcast::Sender<B256>) -> Result<(), broadcast::Sender<B256>> {
     IMPORTED_BLOCKS_TX.set(tx)
@@ -240,12 +277,15 @@ where
         .map_err(|_| "Failed to set best block number provider")?;
 
     // Create function for best total difficulty (u128 approximation).
-    // reth 2.0 dropped HeaderProvider::header_td_by_number. Until the BSC-side
-    // TD accumulator (project memo) is wired up, return None so callers fall
-    // back to safe defaults — vote-broadcast treats this as "TD unknown" and
-    // skips the delta-TD gating, which mirrors how an eth/69 peer would look.
-    let _ = provider;
-    let best_td_fn = Arc::new(move || -> Option<u128> { None });
+    // reth 2.0 dropped HeaderProvider::header_td_by_number; we source TD from
+    // the local accumulator maintained by consensus validation (see
+    // crate::consensus::parlia::td_store). TD on BSC grows by ~1-2 per block,
+    // so u128 is plenty (max u128 = 3.4e38, BSC TD at block 100M ≈ 2e8).
+    let provider_clone4 = provider.clone();
+    let best_td_fn = Arc::new(move || -> Option<u128> {
+        let n = provider_clone4.best_block_number().ok()?;
+        crate::consensus::parlia::td_store::TdStore::best_by_number(n).map(|td| td.to::<u128>())
+    });
     BEST_TD_PROVIDER.set(best_td_fn).map_err(|_| "Failed to set best td provider")?;
 
     Ok(())

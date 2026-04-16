@@ -835,26 +835,25 @@ where
             if is_blob_tx {
                 // Get sidecar from bid.blob_sidecars if available and convert to BscBlobTransactionSidecar
                 if let Some(sidecar) = self.bid.blob_sidecars.get(&tx_hash) {
-                    // reth 2.0 made `Pool::insert_blob` an internal method on the concrete
-                    // `Pool<...>` struct, not on the `TransactionPool` trait. The BSC bid
-                    // simulator only sees the trait, so we can no longer push the sidecar
-                    // into the pool's blob store from here. Until the bid simulator gets a
-                    // direct `BlobStore` handle (or the trait grows an `insert_blob` method),
-                    // we keep the local `BscBlobTransactionSidecar` we build below — the
-                    // sidecar still ships with the sealed block, but it won't be in the
-                    // node's blob store for the EngineAPI getBlobs path. MEV bids that rely
-                    // on out-of-band blob fetch will need this re-wired.
+                    // reth 2.0 made `Pool::insert_blob` private on the concrete Pool
+                    // struct, so we go through the blob store directly. The pool
+                    // stashes it in `crate::shared` at pool-build time.
                     use alloy_eips::eip7594::BlobTransactionSidecarVariant;
-                    let _ = BlobTransactionSidecarVariant::Eip4844(sidecar.clone());
-                    tracing::trace!(
-                        target: "bsc::bid_simulator",
-                        ?tx_hash,
-                        "bid sidecar not pushed into pool blob store (insert_blob removed in reth 2.0)"
-                    );
-                    if false {
-                        // unreachable; preserves the original error-path shape so future
-                        // blob-store wiring only needs to swap the body of this block.
+                    use reth_transaction_pool::blobstore::BlobStore;
+                    let insert_result = if let Some(store) = crate::shared::get_blob_store() {
+                        store.insert(
+                            tx_hash,
+                            BlobTransactionSidecarVariant::Eip4844(sidecar.clone()),
+                        )
+                    } else {
+                        Err(reth_transaction_pool::blobstore::BlobStoreError::Other(
+                            "blob store not initialized".into(),
+                        ))
+                    };
+                    if let Err(e) = insert_result {
+                        debug!("Failed to insert blob sidecar for tx {:?}: {:?}", tx_hash, e);
                         if from_pool {
+                            trace!("bidSimulator: failed to insert blob sidecar, ignore tx:{}, error:{}, recovered tx:{:?}", tx_hash, e, recovered_tx);
                             continue;
                         }
                         return Err("Failed to insert blob sidecar".into());

@@ -65,6 +65,10 @@ where
         crate::shared::set_header_provider(Arc::new(ctx.provider().clone()))
             .unwrap_or_else(|e| panic!("Failed to set global header provider: {e}"));
 
+        // Seed the TD accumulator with genesis now that the canonical header
+        // lookup is wired up. No-op if genesis TD is already persisted.
+        crate::consensus::parlia::td_store::TdStore::seed_genesis();
+
         Ok(Arc::new(BscConsensus::new(ctx.chain_spec())))
     }
 }
@@ -215,6 +219,16 @@ impl<ChainSpec: EthChainSpec + BscHardforks + 'static> HeaderValidator<Header>
                 }
             }
         }
+
+        // Header is valid against its parent — record td(child) = td(parent) +
+        // difficulty. Idempotent; no-op when td(parent) is unknown (e.g. side
+        // chain validated before its ancestors), and the same header being
+        // re-validated writes the same value.
+        crate::consensus::parlia::td_store::record_child(
+            header.hash(),
+            header.header(),
+            parent.hash(),
+        );
 
         Ok(())
     }
@@ -1441,13 +1455,11 @@ where
         if let Some(td) = self.header_td_cache.write().get(&hash) {
             return Ok(*td);
         }
-        // reth 2.0 dropped ConsensusEngineHandle::query_td (TD removed post-merge).
-        // BSC needs TD for fork-choice — see project memo: "BSC still uses TD —
-        // will need a local TD accumulator." Until that lands, return ZERO so
-        // the cache is populated and the comparison degrades to "incoming TD ==
-        // current TD", forcing the canonical-by-hash path. Tests covering chain
-        // reorg by TD will need the accumulator wired up to be meaningful.
-        let td = Some(alloy_primitives::U256::ZERO);
+        // reth 2.0 dropped ConsensusEngineHandle::query_td — we maintain the
+        // accumulator locally (see crate::consensus::parlia::td_store).
+        // Missing → None, which callers treat as "TD unknown, skip this
+        // comparison and fall through to hash-based canonical selection".
+        let td = crate::consensus::parlia::td_store::TdStore::get(&hash);
         self.header_td_cache.write().insert(hash, td);
         Ok(td)
     }

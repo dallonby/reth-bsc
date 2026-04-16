@@ -8,6 +8,7 @@ pub mod util;
 pub mod error;
 pub mod validation;
 pub mod db;
+pub mod td_store;
 pub mod go_rng;
 pub mod ramanujan_fork;
 pub mod bls_signer;
