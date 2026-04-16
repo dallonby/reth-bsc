@@ -115,6 +115,66 @@ impl Table for BscHeaderTd {
     type Value = StoredTd;
 }
 
+/// CBOR-encoded list of blob sidecars for a block, matching the Snapshot
+/// encoding pattern. Newtype for the orphan-impl boundary so we can slot
+/// `Vec<BscBlobTransactionSidecar>` into a reth_db table without touching
+/// the upstream `BlobTransactionSidecar` definition.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct StoredBlobSidecars(pub Vec<crate::node::primitives::BscBlobTransactionSidecar>);
+
+impl Compress for StoredBlobSidecars {
+    type Compressed = Vec<u8>;
+
+    fn compress(self) -> Self::Compressed {
+        serde_cbor::to_vec(&self).expect("serialize BscBlobTransactionSidecar list")
+    }
+
+    fn compress_to_buf<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
+        let bytes =
+            serde_cbor::to_vec(self).expect("serialize BscBlobTransactionSidecar list");
+        buf.put_slice(&bytes);
+    }
+}
+
+impl Decompress for StoredBlobSidecars {
+    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
+        serde_cbor::from_slice(value).map_err(DecompressError::new)
+    }
+}
+
+impl Compact for StoredBlobSidecars {
+    fn to_compact<B: bytes::BufMut + AsMut<[u8]>>(&self, buf: &mut B) -> usize {
+        let bytes =
+            serde_cbor::to_vec(self).expect("serialize BscBlobTransactionSidecar list");
+        let len = bytes.len();
+        buf.put_slice(&bytes);
+        len
+    }
+
+    fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
+        let (chunk, rest) = buf.split_at(len);
+        let v: Self = serde_cbor::from_slice(chunk).unwrap_or_default();
+        (v, rest)
+    }
+}
+
+/// Table: block number -> CBOR-encoded list of BSC blob sidecars.
+///
+/// BSC wraps EIP-4844 blobs with extra metadata (block number/hash, tx
+/// index/hash) per the BEP-336/BEP-657 extensions, so we can't reuse
+/// upstream's sidecar tables directly. reth 2.0's default `BscStorage`
+/// impl had TODO stubs for write/read/remove — this is the backing store
+/// those hooks now use.
+#[derive(Debug)]
+pub struct BscBlobSidecars;
+
+impl Table for BscBlobSidecars {
+    const NAME: &'static str = "BscBlobSidecars";
+    const DUPSORT: bool = false;
+    type Key = u64;
+    type Value = StoredBlobSidecars;
+}
+
 /// Object-safe table-info wrapper for BSC's custom Parlia tables.
 ///
 /// reth 2.0's [`reth_db::tables::TableSet`] yields `Box<dyn TableInfo>`; the
@@ -152,6 +212,7 @@ impl TableSet for ParliaTables {
                 Box::new(ParliaTableInfo { name: ParliaSnapshotsByHash::NAME })
                     as Box<dyn TableInfo>,
                 Box::new(ParliaTableInfo { name: BscHeaderTd::NAME }) as Box<dyn TableInfo>,
+                Box::new(ParliaTableInfo { name: BscBlobSidecars::NAME }) as Box<dyn TableInfo>,
             ]
             .into_iter(),
         )

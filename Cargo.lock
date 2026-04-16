@@ -9590,6 +9590,7 @@ dependencies = [
  "cometbft-light-client-verifier",
  "cometbft-proto",
  "ctr",
+ "dashmap",
  "derive_more 0.99.20",
  "either",
  "eth-keystore",

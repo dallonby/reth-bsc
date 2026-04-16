@@ -1,5 +1,9 @@
-use crate::{BscBlock, BscBlockBody, BscPrimitives};
+use crate::{
+    consensus::parlia::db::{BscBlobSidecars, StoredBlobSidecars},
+    BscBlock, BscBlockBody, BscPrimitives,
+};
 use reth_chainspec::EthereumHardforks;
+use reth_db::cursor::{DbCursorRO, DbCursorRW};
 use reth_db::transaction::{DbTx, DbTxMut};
 use reth_provider::{
     providers::{ChainStorage, NodeTypesForProvider},
@@ -20,17 +24,33 @@ where
         provider: &Provider,
         bodies: Vec<(u64, Option<&BscBlockBody>)>,
     ) -> ProviderResult<()> {
-        let (eth_bodies, _sidecars) = bodies
+        // Collect sidecars alongside the eth-body tuples so we can delegate
+        // eth-body storage unchanged and persist sidecars separately.
+        let mut sidecar_writes: Vec<(u64, StoredBlobSidecars)> = Vec::new();
+        let eth_bodies: Vec<_> = bodies
             .into_iter()
             .map(|(block_number, body)| {
-                let inner = body.map(|b| &b.inner);
-                let sidecars = body.and_then(|b| b.sidecars.as_ref());
-                ((block_number, inner), (block_number, sidecars))
+                if let Some(sidecars) = body.and_then(|b| b.sidecars.as_ref()) {
+                    if !sidecars.is_empty() {
+                        sidecar_writes
+                            .push((block_number, StoredBlobSidecars(sidecars.clone())));
+                    }
+                }
+                (block_number, body.map(|b| &b.inner))
             })
-            .unzip::<_, _, Vec<_>, Vec<_>>();
+            .collect();
         self.0.write_block_bodies(provider, eth_bodies)?;
 
-        // TODO: Write sidecars
+        if !sidecar_writes.is_empty() {
+            let tx = provider.tx_ref();
+            let mut cursor = tx.cursor_write::<BscBlobSidecars>()?;
+            for (block_number, sidecars) in sidecar_writes {
+                // Insert via cursor so callers that write bodies sequentially
+                // (staged sync) get the MDBX fast-path; falls back to `put` on
+                // non-monotonic block numbers.
+                cursor.upsert(block_number, &sidecars)?;
+            }
+        }
 
         Ok(())
     }
@@ -42,7 +62,16 @@ where
     ) -> ProviderResult<()> {
         self.0.remove_block_bodies_above(provider, block)?;
 
-        // TODO: Remove sidecars
+        // Walk sidecars past `block` and delete them. Using a cursor seek so
+        // we only touch the range in question, not scan the whole table.
+        let tx = provider.tx_ref();
+        let mut cursor = tx.cursor_write::<BscBlobSidecars>()?;
+        // Start just past `block`. `seek` positions at the first key >= target.
+        let mut entry = cursor.seek(block.saturating_add(1))?;
+        while let Some((_n, _)) = entry {
+            cursor.delete_current()?;
+            entry = cursor.next()?;
+        }
 
         Ok(())
     }
@@ -59,11 +88,26 @@ where
         provider: &Provider,
         inputs: Vec<ReadBodyInput<'_, Self::Block>>,
     ) -> ProviderResult<Vec<BscBlockBody>> {
+        // Capture the block numbers before handing `inputs` to the eth reader
+        // (it consumes them). `ReadBodyInput` is (&Header, Vec<TxSigned>); we
+        // read `header.number` up front.
+        let block_numbers: Vec<u64> =
+            inputs.iter().map(|(header, _)| header.number).collect();
         let eth_bodies = self.0.read_block_bodies(provider, inputs)?;
 
-        // TODO: Read sidecars
-
-        Ok(eth_bodies.into_iter().map(|inner| BscBlockBody { inner, sidecars: None }).collect())
+        let tx = provider.tx_ref();
+        Ok(eth_bodies
+            .into_iter()
+            .zip(block_numbers)
+            .map(|(inner, n)| {
+                let sidecars = tx
+                    .get::<BscBlobSidecars>(n)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.0);
+                BscBlockBody { inner, sidecars }
+            })
+            .collect())
     }
 }
 
