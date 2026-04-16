@@ -180,15 +180,22 @@ where
         &self.evm_factory
     }
 
+    // reth 2.0 reshaped BlockExecutorFactory::create_executor: the DB generic
+    // is now the EVM's DB directly (any StateDB = Database + DatabaseCommit),
+    // not an inner DB that the factory wraps in `State<...>`. BscBlockExecutor's
+    // StateDB-only bound (see executor.rs) means we pass DB through unchanged
+    // and rely on DatabaseCommit::commit_iter + DatabaseCommitExt::{drain,
+    // increment}_balances for the system-contract patches we used to do via
+    // load_cache_account / apply_transition.
     #[allow(refining_impl_trait)]
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: <Self::EvmFactory as EvmFactory>::Evm<&'a mut State<DB>, I>,
+        evm: <Self::EvmFactory as EvmFactory>::Evm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
-    ) -> BscBlockExecutor<'a, <Self::EvmFactory as EvmFactory>::Evm<&'a mut State<DB>, I>, Spec, R>
+    ) -> BscBlockExecutor<'a, <Self::EvmFactory as EvmFactory>::Evm<DB, I>, Spec, R>
     where
-        DB: alloy_evm::Database + 'a,
-        I: Inspector<<Self::EvmFactory as EvmFactory>::Context<&'a mut State<DB>>> + 'a,
+        DB: alloy_evm::block::StateDB + 'a,
+        I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>> + 'a,
     {
         BscBlockExecutor::new(
             evm,
@@ -395,6 +402,10 @@ where
     }
 
     // payload builder use this method to create BscBlockBuilder.
+    // reth 2.0: create_block_builder still wraps DB in `&'a mut State<DB>`
+    // (State<DB> is a concrete StateDB so it satisfies the BlockExecutorFor
+    // bound). The associated `Executor: BlockExecutorFor<..., &'a mut State<DB>, I>`
+    // is what the returned BlockBuilder must prove.
     fn create_block_builder<'a, DB, I>(
         &'a self,
         evm: EvmFor<Self, &'a mut State<DB>, I>,
@@ -402,7 +413,7 @@ where
         ctx: <Self::BlockExecutorFactory as BlockExecutorFactory>::ExecutionCtx<'a>,
     ) -> impl BlockBuilder<
         Primitives = Self::Primitives,
-        Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, DB, I>,
+        Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, &'a mut State<DB>, I>,
     >
     where
         DB: Database,

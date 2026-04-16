@@ -15,19 +15,23 @@ use reth_evm::{
     eth::receipt_builder::ReceiptBuilder,
     execute::{BlockExecutionError, BlockExecutor},
     system_calls::SystemCaller,
-    Database, Evm, FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, OnStateHook, RecoveredTx,
+    Evm, FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, OnStateHook, RecoveredTx,
 };
 use reth_ethereum_primitives::TransactionSigned;
 use reth_provider::BlockExecutionResult;
-use reth_revm::State;
+// reth 2.0 relaxed BlockExecutorFactory::create_executor to take any DB: StateDB,
+// so the executor can no longer require a concrete `&'a mut State<DB>` on the EVM.
+// We lean on DatabaseCommit + DatabaseCommitExt (drain_balances / increment_balances)
+// and `commit_iter` to make bytecode/nonce patches, instead of the State-specific
+// `load_cache_account` / `apply_transition` pair we used before.
 use revm::{
     context::{
         result::{ExecutionResult, ResultAndState},
 
     },
     context_interface::block::Block,
-    state::Bytecode,
-    DatabaseCommit,
+    state::{Account, AccountInfo, Bytecode},
+    Database as _RevmDatabase, DatabaseCommit,
 };
 use tracing::{error, warn, info, debug, trace};
 use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
@@ -123,11 +127,10 @@ where
     pub(super) rewards_metrics: BscRewardsMetrics,
 }
 
-impl<'a, DB, EVM, Spec, R: ReceiptBuilder> BscBlockExecutor<'a, EVM, Spec, R>
+impl<'a, EVM, Spec, R: ReceiptBuilder> BscBlockExecutor<'a, EVM, Spec, R>
 where
-    DB: Database + 'a,
     EVM: Evm<
-        DB = &'a mut State<DB>,
+        DB: alloy_evm::block::StateDB + 'a,
         Tx: FromRecoveredTx<R::Transaction>
                 + FromRecoveredTx<TransactionSigned>
                 + FromTxWithEncoded<TransactionSigned>,
@@ -311,15 +314,28 @@ where
         address: Address,
         code: Bytecode,
     ) -> Result<(), BlockExecutionError> {
-        let account =
-            self.evm.db_mut().load_cache_account(address).map_err(BlockExecutionError::other)?;
-
-        let mut info = account.account_info().unwrap_or_default();
-        info.code_hash = code.hash_slow();
-        info.code = Some(code);
-
-        let transition = account.change(info, Default::default());
-        self.evm.db_mut().apply_transition(vec![(address, transition)]);
+        // Trait-only replacement for the old State::load_cache_account /
+        // apply_transition pair: read the current AccountInfo via
+        // Database::basic, patch code + code_hash, build a touched Account,
+        // and flush via DatabaseCommit::commit_iter — which State<DB> routes
+        // through its own transition machinery just like the old path did.
+        let info = self
+            .evm
+            .db_mut()
+            .basic(address)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        let new_info = AccountInfo {
+            code_hash: code.hash_slow(),
+            code: Some(code),
+            ..info
+        };
+        let mut account = Account::default();
+        account.info = new_info;
+        account.mark_touch();
+        self.evm
+            .db_mut()
+            .commit_iter(&mut core::iter::once((address, account)));
         Ok(())
     }
 
@@ -334,17 +350,20 @@ where
             "Deploying HistoryStorageAddress contract (Prague transition)"
         );
 
-        let account = self.evm.db_mut().load_cache_account(HISTORY_STORAGE_ADDRESS).map_err(|err| {
-            error!(
-                target: "bsc::executor::prague",
-                block_number,
-                error = ?err,
-                "Failed to load HistoryStorageAddress account",
-            );
-            BlockExecutionError::other(err)
-        })?;
-
-        let old_info = account.account_info();
+        // Same trait-only pattern as upgrade_system_contract above.
+        let old_info = self
+            .evm
+            .db_mut()
+            .basic(HISTORY_STORAGE_ADDRESS)
+            .map_err(|err| {
+                error!(
+                    target: "bsc::executor::prague",
+                    block_number,
+                    error = ?err,
+                    "Failed to load HistoryStorageAddress account",
+                );
+                BlockExecutionError::other(err)
+            })?;
         debug!(
             target: "bsc::executor::prague",
             block_number,
@@ -353,14 +372,19 @@ where
             "HistoryStorageAddress account before deployment"
         );
 
-        let mut new_info = account.account_info().unwrap_or_default();
-        new_info.code_hash = keccak256(HISTORY_STORAGE_CODE.clone());
-        new_info.code = Some(Bytecode::new_raw(Bytes::from_static(&HISTORY_STORAGE_CODE)));
-        new_info.nonce = 1_u64;
-        new_info.balance = U256::ZERO;
-
-        let transition = account.change(new_info, Default::default());
-        self.evm.db_mut().apply_transition(vec![(HISTORY_STORAGE_ADDRESS, transition)]);
+        let new_info = AccountInfo {
+            code_hash: keccak256(HISTORY_STORAGE_CODE.clone()),
+            code: Some(Bytecode::new_raw(Bytes::from_static(&HISTORY_STORAGE_CODE))),
+            nonce: 1_u64,
+            balance: U256::ZERO,
+            account_id: None,
+        };
+        let mut account = Account::default();
+        account.info = new_info;
+        account.mark_touch();
+        self.evm
+            .db_mut()
+            .commit_iter(&mut core::iter::once((HISTORY_STORAGE_ADDRESS, account)));
         
         info!(
             target: "bsc::executor::prague",
@@ -371,11 +395,10 @@ where
     }
 }
 
-impl<'a, DB, E, Spec, R> BlockExecutor for BscBlockExecutor<'a, E, Spec, R>
+impl<'a, E, Spec, R> BlockExecutor for BscBlockExecutor<'a, E, Spec, R>
 where
-    DB: Database + 'a,
     E: Evm<
-        DB = &'a mut State<DB>,
+        DB: alloy_evm::block::StateDB + 'a,
         Tx: FromRecoveredTx<R::Transaction>
                 + FromRecoveredTx<TransactionSigned>
                 + FromTxWithEncoded<TransactionSigned>,
