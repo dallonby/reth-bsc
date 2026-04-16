@@ -153,15 +153,25 @@ impl SystemCallTx for BscTxEnv {
     }
 }
 
-impl TryIntoTxEnv<BscTxEnv> for TransactionRequest {
-    type Err = <TransactionRequest as TryIntoTxEnv<TxEnv>>::Err;
+// alloy-evm 0.30 moved Spec from a method-level generic to a trait-level
+// associated parameter on TryIntoTxEnv (now `TryIntoTxEnv<T, Spec, BlockEnv>`).
+// We mirror that shape and forward to the inherent TxEnv impl with the same
+// Spec/BlockEnv pairing.
+impl<Spec, Block> TryIntoTxEnv<BscTxEnv, Spec, Block> for TransactionRequest
+where
+    Block: alloy_evm::env::BlockEnvironment,
+    TransactionRequest: TryIntoTxEnv<TxEnv, Spec, Block>,
+{
+    type Err = <TransactionRequest as TryIntoTxEnv<TxEnv, Spec, Block>>::Err;
 
-    fn try_into_tx_env<Spec>(
+    fn try_into_tx_env(
         self,
-        evm_env: &EvmEnv<Spec>,
-    ) -> Result<BscTxEnv, <TransactionRequest as TryIntoTxEnv<TxEnv>>::Err> {
+        evm_env: &EvmEnv<Spec, Block>,
+    ) -> Result<BscTxEnv, Self::Err> {
         Ok(BscTxEnv {
-            base: <TransactionRequest as TryIntoTxEnv<TxEnv>>::try_into_tx_env(self, evm_env)?,
+            base: <TransactionRequest as TryIntoTxEnv<TxEnv, Spec, Block>>::try_into_tx_env(
+                self, evm_env,
+            )?,
             is_system_transaction: false,
         })
     }

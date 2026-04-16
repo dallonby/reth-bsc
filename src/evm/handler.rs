@@ -23,7 +23,10 @@ use revm::{
     interpreter::{interpreter::EthInterpreter, Host, InitialAndFloorGas, SuccessOrHalt},
     primitives::hardfork::SpecId,
 };
-use revm_context_interface::journaled_state::account::JournaledAccountTr;
+// Note: import via `revm::context_interface` (v16) to match the trait that revm 36
+// implements on JournaledAccount; importing the top-level `revm-context-interface`
+// crate (v17) silently picks the wrong version and methods would not resolve.
+use revm::context_interface::journaled_state::account::JournaledAccountTr;
 
 use crate::consensus::SYSTEM_ADDRESS;
 pub struct BscHandler<DB: revm::Database, INSP> {
@@ -249,6 +252,7 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
         &mut self,
         evm: &mut Self::Evm,
         result: FrameResult,
+        result_gas: revm::context::result::ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         // Ensure we always pop the trace context, even on early returns.
         struct PrecompileTracePopGuard;
@@ -265,15 +269,20 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
             Ok(_) => (),
         }
 
-        // used gas with refund calculated.
-        let raw_gas_refunded = result.gas().refunded() as u64;
-        let raw_gas_spent = result.gas().spent();
+        // BSC: system transactions never get a gas refund — the `from` is the
+        // signer of the system tx, and we don't want to credit them anything.
+        // ResultGas now encapsulates spent/refunded/floor/intrinsic; rebuild it
+        // with refunded=0 so `.used()` reduces to `max(spent, floor_gas)`.
         let is_system_tx = {
             let ctx = evm.ctx_ref();
             ctx.tx().is_system_transaction
         };
-        let gas_refunded = if is_system_tx { 0 } else { raw_gas_refunded };
-        let final_gas_used = raw_gas_spent - gas_refunded;
+        let result_gas = if is_system_tx {
+            result_gas.with_refunded(0)
+        } else {
+            result_gas
+        };
+
         let output = result.output();
         let instruction_result = result.into_interpreter_result();
 
@@ -283,17 +292,20 @@ impl<DB: Database, INSP> Handler for BscHandler<DB, INSP> {
         let result = match SuccessOrHalt::from(instruction_result.result) {
             SuccessOrHalt::Success(reason) => ExecutionResult::Success {
                 reason,
-                gas_used: final_gas_used,
-                gas_refunded,
+                gas: result_gas,
                 logs,
                 output,
             },
-            SuccessOrHalt::Revert => {
-                ExecutionResult::Revert { gas_used: final_gas_used, output: output.into_data() }
-            }
-            SuccessOrHalt::Halt(reason) => {
-                ExecutionResult::Halt { reason, gas_used: final_gas_used }
-            }
+            SuccessOrHalt::Revert => ExecutionResult::Revert {
+                gas: result_gas,
+                logs,
+                output: output.into_data(),
+            },
+            SuccessOrHalt::Halt(reason) => ExecutionResult::Halt {
+                reason,
+                gas: result_gas,
+                logs,
+            },
             // Only two internal return flags.
             flag @ (SuccessOrHalt::FatalExternalError | SuccessOrHalt::Internal(_)) => {
                 panic!(
