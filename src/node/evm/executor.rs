@@ -4,9 +4,9 @@ use crate::{
         SystemContract, feynman_fork::ValidatorElectionInfo, get_upgrade_system_contracts, is_system_transaction
     }
 };
-use alloy_consensus::{Header, Transaction, TxReceipt};
+use alloy_consensus::{Header, Transaction, TransactionEnvelope, TxReceipt};
 use alloy_eips::{eip7685::Requests, Encodable2718};
-use alloy_evm::{block::{ExecutableTx, StateChangeSource}, eth::receipt_builder::ReceiptBuilderCtx};
+use alloy_evm::{block::{ExecutableTx, StateChangeSource, TxResult}, eth::receipt_builder::ReceiptBuilderCtx, IntoTxEnv as AlloyIntoTxEnv};
 use alloy_primitives::{hex, uint, Address, U256, BlockNumber, Bytes};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use super::config::{BscBlockExecutionCtx, revm_spec_by_timestamp_and_block_number};
@@ -34,6 +34,36 @@ use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
 use alloy_primitives::keccak256;
 use std::{collections::HashMap, sync::Arc};
 use crate::consensus::parlia::SnapshotProvider;
+
+/// Result of executing a single BSC transaction without committing state.
+///
+/// Carries the data `commit_transaction` needs after execution: the EVM
+/// `ResultAndState`, the consensus `tx_type` for the receipt, the blob gas
+/// used (Cancun+), and the tx hash (for observability).
+#[derive(Debug)]
+pub struct BscTxResult<H> {
+    /// Result of the transaction execution.
+    pub result: ResultAndState<H>,
+    /// Type of the transaction (consensus tx type byte).
+    pub tx_type: alloy_consensus::TxType,
+    /// Blob gas used by the transaction (0 before Cancun).
+    pub blob_gas_used: u64,
+    /// Transaction hash, retained for trace/diagnostic context.
+    pub tx_hash: alloy_primitives::B256,
+}
+
+impl<H> TxResult for BscTxResult<H> {
+    type HaltReason = H;
+
+    fn result(&self) -> &ResultAndState<Self::HaltReason> {
+        &self.result
+    }
+
+    fn into_result(self) -> ResultAndState<Self::HaltReason> {
+        self.result
+    }
+}
+
 /// Helper type for the input of post execution.
 #[allow(clippy::type_complexity)]
 #[derive(Debug, Clone)]
@@ -361,6 +391,7 @@ where
     type Transaction = TransactionSigned;
     type Receipt = R::Receipt;
     type Evm = E;
+    type Result = BscTxResult<<E as Evm>::HaltReason>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         let block_env = self.evm.block().clone();
@@ -382,10 +413,8 @@ where
             self.check_new_block(&block_env)?;
         }
         
-        // set state clear flag if the block is after the Spurious Dragon hardfork.
-        let block_number = self.evm.block().number().to::<u64>();
-        let state_clear_flag = self.spec.is_spurious_dragon_active_at_block(block_number);
-        self.evm.db_mut().set_state_clear_flag(state_clear_flag);
+        // State clear flag is now handled by the EVM journal in `finalize()` based on the spec
+        // (revm-database 12.0.0+); the database always applies post-EIP-161 commit semantics.
         let parent_timestamp = self.inner_ctx.parent_header.as_ref().unwrap().timestamp;
         self.try_update_build_in_system_contract(
             self.evm.block().number().to::<u64>(), 
@@ -415,7 +444,9 @@ where
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
-    ) -> Result<ResultAndState<<Self::Evm as Evm>::HaltReason>, BlockExecutionError> {
+    ) -> Result<Self::Result, BlockExecutionError> {
+        let (tx_env, tx) = tx.into_parts();
+
         let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
         if tx.tx().gas_limit() > block_available_gas {
             return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
@@ -457,17 +488,21 @@ where
         }
         let _precompile_trace_pop_guard = PrecompileTracePopGuard;
 
-        self.evm
-            .transact(&tx)
-            .map_err(|err| BlockExecutionError::evm(err, tx_hash))
+        let tx_type = tx.tx().tx_type();
+        let blob_gas_used = tx.tx().blob_gas_used().unwrap_or_default();
+
+        let result = self.evm
+            .transact(tx_env)
+            .map_err(|err| BlockExecutionError::evm(err, tx_hash))?;
+
+        Ok(BscTxResult { result, tx_type, blob_gas_used, tx_hash })
     }
 
     fn commit_transaction(
         &mut self,
-        output: ResultAndState<<Self::Evm as Evm>::HaltReason>,
-        tx: impl ExecutableTx<Self>,
+        output: Self::Result,
     ) -> Result<u64, BlockExecutionError> {
-        let ResultAndState { result, state } = output;
+        let BscTxResult { result: ResultAndState { result, state }, tx_type, blob_gas_used, tx_hash: _ } = output;
 
         let mut temp_state = state.clone();
         temp_state.remove(&SYSTEM_ADDRESS);
@@ -476,10 +511,16 @@ where
 
         let gas_used = result.gas_used();
         self.gas_used += gas_used;
-        self.accumulate_blob_gas_used(tx.tx());
+        if BscHardforks::is_cancun_active_at_timestamp(
+            &self.spec,
+            self.evm.block().number().to::<u64>(),
+            self.evm.block().timestamp().to::<u64>(),
+        ) {
+            self.blob_gas_used = self.blob_gas_used.saturating_add(blob_gas_used);
+        }
 
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
-            tx: tx.tx(),
+            tx_type,
             evm: &self.evm,
             result,
             state: &state,
@@ -496,117 +537,48 @@ where
         tx: impl ExecutableTx<Self>,
         f: impl FnOnce(&ExecutionResult<<Self::Evm as Evm>::HaltReason>) -> CommitChanges,
     ) -> Result<Option<u64>, BlockExecutionError> {
-        // The sum of the transaction's gas limit, Tg, and the gas utilized in this block prior,
-        // must be no greater than the block's gasLimit.
-        let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
+        let output = self.execute_transaction_without_commit(tx)?;
 
-        if tx.tx().gas_limit() > block_available_gas {
-            return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                transaction_gas_limit: tx.tx().gas_limit(),
-                block_available_gas,
-            }
-            .into());
-        }
-
-        let tx_hash = tx.tx().trie_hash();
-        let block_number = self.evm.block().number().to::<u64>();
-        let timestamp = self.evm.block().timestamp().to::<u64>();
-        let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
-        let (to, selector, input_len) = {
-            let to = tx.tx().to();
-            let input = tx.tx().input();
-            let selector = if input.len() >= 4 {
-                Some(hex::encode(&input[..4]))
-            } else {
-                None
-            };
-            (to, selector, input.len())
-        };
-
-        precompiles::push_precompile_trace_context(precompiles::PrecompileTraceContext::from_parts(
-            block_number,
-            spec,
-            false,
-            Some(tx_hash),
-            to,
-            selector,
-            input_len,
-        ));
-        struct PrecompileTracePopGuard;
-        impl Drop for PrecompileTracePopGuard {
-            fn drop(&mut self) {
-                precompiles::pop_precompile_trace_context();
-            }
-        }
-        let _precompile_trace_pop_guard = PrecompileTracePopGuard;
-
-        // Execute transaction.
-        let ResultAndState { result, state } = self
-            .evm
-            .transact(&tx)
-            .map_err(|err| BlockExecutionError::evm(err, tx_hash))?;
-
-        if !f(&result).should_commit() {
+        if !f(&output.result.result).should_commit() {
             return Ok(None);
         }
 
-        let mut temp_state = state.clone();
-        temp_state.remove(&SYSTEM_ADDRESS);
-        self.system_caller
-            .on_state(StateChangeSource::Transaction(self.receipts.len()), &temp_state);
-
-        let gas_used = result.gas_used();
-
-        // append gas used
-        self.gas_used += gas_used;
-        self.accumulate_blob_gas_used(tx.tx());
-
-        // Push transaction changeset and calculate header bloom filter for receipt.
-        self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
-            tx: tx.tx(),
-            evm: &self.evm,
-            result,
-            state: &state,
-            cumulative_gas_used: self.gas_used,
-        }));
-
-        // Commit the state changes.
-        self.evm.db_mut().commit(state);
-
+        let gas_used = self.commit_transaction(output)?;
         Ok(Some(gas_used))
     }
 
     fn execute_transaction_with_result_closure(
         &mut self,
-        tx: impl ExecutableTx<Self>
-            + IntoTxEnv<<E as alloy_evm::Evm>::Tx>
-            + RecoveredTx<TransactionSigned>,
+        tx: impl ExecutableTx<Self>,
         f: impl for<'b> FnOnce(&'b ExecutionResult<<E as alloy_evm::Evm>::HaltReason>),
     ) -> Result<u64, BlockExecutionError> {
-        let signer = tx.signer();
-        let is_system = is_system_transaction(tx.tx(), *signer, self.evm.block().beneficiary());
+        let (tx_env, recovered) = tx.into_parts();
+
+        let signer = recovered.signer();
+        let signed_tx: &TransactionSigned = recovered.tx();
+        let is_system = is_system_transaction(signed_tx, *signer, self.evm.block().beneficiary());
         if is_system {
-            self.system_txs.push(tx.tx().clone());
+            self.system_txs.push(signed_tx.clone());
             return Ok(0);
         }
 
-        self.hertz_patch_manager.patch_before_tx(tx.tx(), self.evm.db_mut())?;
+        self.hertz_patch_manager.patch_before_tx(signed_tx, self.evm.db_mut())?;
 
         let block_available_gas = self.evm.block().gas_limit() - self.gas_used;
-        if tx.tx().gas_limit() > block_available_gas {
+        if signed_tx.gas_limit() > block_available_gas {
             return Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
-                transaction_gas_limit: tx.tx().gas_limit(),
+                transaction_gas_limit: signed_tx.gas_limit(),
                 block_available_gas,
             }
             .into());
         }
-        let tx_hash = tx.tx().trie_hash();
+        let tx_hash = signed_tx.trie_hash();
         let block_number = self.evm.block().number().to::<u64>();
         let timestamp = self.evm.block().timestamp().to::<u64>();
         let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
         let (to, selector, input_len) = {
-            let to = tx.tx().to();
-            let input = tx.tx().input();
+            let to = signed_tx.to();
+            let input = signed_tx.input();
             let selector = if input.len() >= 4 {
                 Some(hex::encode(&input[..4]))
             } else {
@@ -632,9 +604,10 @@ where
         }
         let _precompile_trace_pop_guard = PrecompileTracePopGuard;
 
-        let tx_ref = tx.tx().clone();
+        let tx_ref = signed_tx.clone();
+        let tx_type = tx_ref.tx_type();
         let result_and_state =
-            self.evm.transact(tx).map_err(|err| BlockExecutionError::evm(err, tx_hash))?;
+            self.evm.transact(tx_env).map_err(|err| BlockExecutionError::evm(err, tx_hash))?;
         let ResultAndState { result, state } = result_and_state;
 
         f(&result);
@@ -647,7 +620,7 @@ where
         self.gas_used += gas_used;
         self.accumulate_blob_gas_used(&tx_ref);
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
-            tx: &tx_ref,
+            tx_type,
             evm: &self.evm,
             result,
             state: &state,

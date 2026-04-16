@@ -23,7 +23,7 @@ use revm::{
     DatabaseCommit,
 };
 use revm_database::DatabaseCommitExt;
-use alloy_consensus::{Header, TxReceipt, Transaction as AlloyTransaction, SignableTransaction};
+use alloy_consensus::{Header, TxReceipt, Transaction as AlloyTransaction, TransactionEnvelope, SignableTransaction};
 use alloy_primitives::{Address, BlockNumber, TxKind, U256, hex};
 use std::collections::HashMap;
 use tracing::warn;
@@ -427,7 +427,7 @@ where
         self.executor_metrics.system_tx_gas_used_total.increment(gas_used);
 
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
-            tx: signed_tx.as_ref().unwrap(),
+            tx_type: signed_tx.as_ref().unwrap().tx_type(),
             evm: &self.evm,
             result,
             state: &state,
