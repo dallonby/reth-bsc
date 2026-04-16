@@ -625,9 +625,17 @@ where
             self.parlia.clone(),
             mining_ctx.clone(),
         );
+        // reth 2.0: PayloadConfig::new now takes (parent, attributes, payload_id).
+        // Use the id we already computed when building the attributes so engine
+        // API replays line up.
+        let payload_id = attributes.id;
         let build_args = BscBuildArguments {
             cached_reads: mining_ctx.cached_reads.clone().unwrap_or_default(),
-            config: PayloadConfig::new(Arc::new(mining_ctx.parent_header.clone()), attributes),
+            config: PayloadConfig::new(
+                Arc::new(mining_ctx.parent_header.clone()),
+                attributes,
+                payload_id,
+            ),
             cancel: ManualCancel::default(),
             trace_id: crate::node::miner::payload::generate_trace_id(),
             min_gas_tip: self.desired_min_gas_tip,

@@ -177,7 +177,7 @@ where
     ) -> Result<BscBuiltPayload, Box<dyn std::error::Error + Send + Sync>> {
         let build_start = std::time::Instant::now();
         let BscBuildArguments { mut cached_reads, config, cancel, trace_id, min_gas_tip } = args;
-        let PayloadConfig { parent_header, attributes } = config;
+        let PayloadConfig { parent_header, attributes, payload_id: _ } = config;
 
         let state_provider = self.client.state_by_block_hash(parent_header.hash_slow())?;
         let state = StateProviderDatabase::new(&state_provider);
@@ -520,7 +520,7 @@ where
         // add system txs to payload.
         let finalize_start = std::time::Instant::now();
         let BlockBuilderOutcome { execution_result, hashed_state, trie_updates, block } =
-            builder.finish(&state_provider)?;
+            builder.finish(&state_provider, None)?;
         let mut sealed_block = Arc::new(block.sealed_block().clone());
 
         // Update miner metrics
@@ -614,7 +614,7 @@ where
         let build_start = std::time::Instant::now();
         let BscBuildArguments { mut cached_reads, config, cancel: _, trace_id, min_gas_tip: _ } =
             args;
-        let PayloadConfig { parent_header, attributes } = config;
+        let PayloadConfig { parent_header, attributes, payload_id: _ } = config;
 
         let state_provider = self.client.state_by_block_hash(parent_header.hash_slow())?;
         let state = StateProviderDatabase::new(&state_provider);
@@ -657,7 +657,7 @@ where
         // Add system txs to payload and finalize
         let finalize_start = std::time::Instant::now();
         let BlockBuilderOutcome { execution_result, hashed_state, trie_updates, block } =
-            builder.finish(&state_provider)?;
+            builder.finish(&state_provider, None)?;
         let sealed_block = Arc::new(block.sealed_block().clone());
 
         // Update miner metrics

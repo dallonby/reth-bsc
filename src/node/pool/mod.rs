@@ -176,11 +176,22 @@ where
     <Types as NodeTypes>::Payload: PayloadTypes,
     EthPooledTransaction<EthTxSigned>: reth_transaction_pool::EthPoolTransaction,
     EthPooledTransaction<EthTxSigned>: PoolTransaction,
-    Evm: Send,
+    // reth 2.0: EthTransactionValidator reads fork rules off the Evm config,
+    // so the Evm generic must implement ConfigureEvm. The validator also needs
+    // Evm::Primitives to match the node's primitives, otherwise the generic
+    // glue in TransactionValidationTaskExecutor can't line up block/header types.
+    Evm: reth_evm::ConfigureEvm<Primitives = <Types as NodeTypes>::Primitives>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
+    // reth 2.0 added an `Evm` generic to EthTransactionValidator so the validator
+    // can read the active fork rules from the EVM config rather than via the
+    // removed `with_head_timestamp` setter. Forward the same Evm we receive.
     type Pool = Pool<
         TransactionValidationTaskExecutor<
-            BscTxValidator<EthTransactionValidator<Node::Provider, EthPooledTransaction>>,
+            BscTxValidator<EthTransactionValidator<Node::Provider, EthPooledTransaction, Evm>>,
         >,
         CoinbaseTipOrdering<EthPooledTransaction>,
         DiskFileBlobStore,
@@ -189,7 +200,7 @@ where
     async fn build_pool(
         self,
         ctx: &BuilderContext<Node>,
-        _evm_config: Evm,
+        evm_config: Evm,
     ) -> eyre::Result<Self::Pool> {
         let pool_config = ctx.pool_config();
 
@@ -214,8 +225,12 @@ where
         // Build default Ethereum validator executor
         // BSC rejected EIP-7594 (PeerDAS), so we disable EIP-7594 sidecar support to always
         // use v0 (legacy) blob sidecars and reject v1 (EIP-7594) sidecars.
-        let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
-            .with_head_timestamp(ctx.head().timestamp)
+        // reth 2.0: eth_builder takes (client, evm_config); with_head_timestamp
+        // is gone — the validator now reads the active fork rules from evm_config.
+        let validator = TransactionValidationTaskExecutor::eth_builder(
+            ctx.provider().clone(),
+            evm_config,
+        )
             .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
             .kzg_settings(ctx.kzg_settings()?)
             .with_local_transactions_config(pool_config.local_transactions_config.clone())

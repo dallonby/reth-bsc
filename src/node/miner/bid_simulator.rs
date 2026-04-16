@@ -505,7 +505,7 @@ where
 
         // Finish the builder
         let BlockBuilderOutcome { execution_result, hashed_state, trie_updates, block } =
-            match builder.finish(&state_provider).map_err(PayloadBuilderError::other) {
+            match builder.finish(&state_provider, None).map_err(PayloadBuilderError::other) {
                 Ok(outcome) => outcome,
                 Err(e) => {
                     debug!("Failed to finish builder: {:?}", e);
@@ -835,15 +835,26 @@ where
             if is_blob_tx {
                 // Get sidecar from bid.blob_sidecars if available and convert to BscBlobTransactionSidecar
                 if let Some(sidecar) = self.bid.blob_sidecars.get(&tx_hash) {
-                    // Insert blob sidecar into pool's blob store
+                    // reth 2.0 made `Pool::insert_blob` an internal method on the concrete
+                    // `Pool<...>` struct, not on the `TransactionPool` trait. The BSC bid
+                    // simulator only sees the trait, so we can no longer push the sidecar
+                    // into the pool's blob store from here. Until the bid simulator gets a
+                    // direct `BlobStore` handle (or the trait grows an `insert_blob` method),
+                    // we keep the local `BscBlobTransactionSidecar` we build below — the
+                    // sidecar still ships with the sealed block, but it won't be in the
+                    // node's blob store for the EngineAPI getBlobs path. MEV bids that rely
+                    // on out-of-band blob fetch will need this re-wired.
                     use alloy_eips::eip7594::BlobTransactionSidecarVariant;
-                    if let Err(e) = self.pool.insert_blob(
-                        tx_hash,
-                        BlobTransactionSidecarVariant::Eip4844(sidecar.clone()),
-                    ) {
-                        debug!("Failed to insert blob sidecar for tx {:?}: {:?}", tx_hash, e);
+                    let _ = BlobTransactionSidecarVariant::Eip4844(sidecar.clone());
+                    tracing::trace!(
+                        target: "bsc::bid_simulator",
+                        ?tx_hash,
+                        "bid sidecar not pushed into pool blob store (insert_blob removed in reth 2.0)"
+                    );
+                    if false {
+                        // unreachable; preserves the original error-path shape so future
+                        // blob-store wiring only needs to swap the body of this block.
                         if from_pool {
-                            trace!("bidSimulator: failed to insert blob sidecar, ignore tx:{}, error:{}, recovered tx:{:?}", tx_hash, e, recovered_tx);
                             continue;
                         }
                         return Err("Failed to insert blob sidecar".into());

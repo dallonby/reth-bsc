@@ -77,27 +77,16 @@ where
     type EthApi = EthApiFor<N>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
+        // reth 2.0 dropped EthApiBuilder::with_current_validators_len (a
+        // bnb-chain fork addition that fed the live Parlia validator count
+        // into eth_chainId/network responses for BSC). Until upstream grows
+        // an equivalent extension point — or we wrap the EthApi with a
+        // BSC-specific decorator — those RPC paths fall back to upstream
+        // defaults. Snapshot lookup helpers are still in place via
+        // crate::shared::get_snapshot_provider, so wiring this back in is
+        // a small change once an extension hook lands.
         let eth_api = ctx
             .eth_api_builder()
-            .with_current_validators_len(move || {
-                let count = (|| {
-                    let best_block = crate::shared::get_best_canonical_block_number()?;
-                    let header = crate::shared::get_canonical_header_by_number(best_block)?;
-                    let snapshot_provider = crate::shared::get_snapshot_provider()?;
-                    Some(
-                        snapshot_provider
-                            .snapshot_by_hash(&header.hash_slow())?
-                            .validators
-                            .len(),
-                    )
-                })();
-
-                if count.is_none() {
-                    trace!(target: "rpc::eth", "validator count unavailable for finalized-header callbacks");
-                }
-
-                count
-            })
             .map_converter(|r| r.with_network())
             .build();
 
