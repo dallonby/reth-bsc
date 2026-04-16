@@ -6976,6 +6976,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "eyre",
+ "libc",
  "parking_lot",
  "rayon",
  "reth-db",

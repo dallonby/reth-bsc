@@ -175,17 +175,116 @@ fn copy_segment_triplet(seg: &Segment, dest_dir: &Path) -> eyre::Result<u64> {
     Ok(bytes)
 }
 
-/// Copy a single file using `std::fs::copy` — simple, uses the kernel's best
-/// available path (copy_file_range on Linux, sendfile fallback, plain read/
-/// write otherwise).
+/// Copy a single file, using chunked parallel `pread`/`pwrite` for large
+/// files to saturate modern NVMe queue depth. Small files fall through to
+/// `std::fs::copy`.
+///
+/// Why: `std::fs::copy` is effectively one kernel op per file — even for
+/// multi-GB files. On PCIe 5 x4 SSDs like Samsung 9100 PRO (rated ~13 GB/s
+/// write) we saw a single `fs::copy` cap around 100–200 MB/s/thread. By
+/// splitting each file into independent 32 MB chunks and dispatching them
+/// onto rayon's global pool, each chunk becomes its own concurrent op —
+/// queue depth scales with chunk count instead of file count.
+///
+/// `fallocate` pre-reserves the destination extent to avoid the fs having
+/// to extend it under concurrent writes (meaningful on XFS/ext4; no-op on
+/// filesystems that don't support it).
 fn copy_file(src: &Path, dst: &Path) -> eyre::Result<u64> {
-    match fs::copy(src, dst) {
-        Ok(n) => Ok(n),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            eyre::bail!("{} already exists; refusing to overwrite", dst.display())
-        }
-        Err(e) => Err(eyre::eyre!("copy {} -> {}: {e}", src.display(), dst.display())),
+    const LARGE_FILE_THRESHOLD: u64 = 128 * 1024 * 1024; // 128 MB
+    const CHUNK_SIZE: u64 = 32 * 1024 * 1024; // 32 MB
+
+    // Refuse to clobber — same contract as before.
+    if dst.exists() {
+        eyre::bail!("{} already exists; refusing to overwrite", dst.display());
     }
+
+    let src_file = fs::File::open(src)
+        .map_err(|e| eyre::eyre!("open source {}: {e}", src.display()))?;
+    let size = src_file
+        .metadata()
+        .map_err(|e| eyre::eyre!("stat source {}: {e}", src.display()))?
+        .len();
+
+    // Small files: cheap path.
+    if size < LARGE_FILE_THRESHOLD {
+        drop(src_file);
+        return match fs::copy(src, dst) {
+            Ok(n) => Ok(n),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                eyre::bail!("{} already exists; refusing to overwrite", dst.display())
+            }
+            Err(e) => Err(eyre::eyre!("copy {} -> {}: {e}", src.display(), dst.display())),
+        };
+    }
+
+    // Large files: chunked parallel copy.
+    let dst_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)
+        .map_err(|e| eyre::eyre!("create dest {}: {e}", dst.display()))?;
+
+    // Pre-allocate the full extent. Keeps concurrent pwrites from racing to
+    // extend the file. On filesystems that don't support fallocate this
+    // returns an error we ignore (the writes will still work, just slower).
+    preallocate(&dst_file, size);
+
+    let src_arc = std::sync::Arc::new(src_file);
+    let dst_arc = std::sync::Arc::new(dst_file);
+
+    let num_chunks = size.div_ceil(CHUNK_SIZE);
+    (0..num_chunks)
+        .into_par_iter()
+        .try_for_each(|i| -> eyre::Result<()> {
+            let offset = i * CHUNK_SIZE;
+            let len = (size - offset).min(CHUNK_SIZE) as usize;
+            let mut buf = vec![0u8; len];
+            pread_exact(&src_arc, &mut buf, offset)
+                .map_err(|e| eyre::eyre!("pread {} @ {offset}: {e}", src.display()))?;
+            pwrite_all(&dst_arc, &buf, offset)
+                .map_err(|e| eyre::eyre!("pwrite {} @ {offset}: {e}", dst.display()))?;
+            Ok(())
+        })?;
+
+    Ok(size)
+}
+
+/// Best-effort preallocation. Silently ignores any failure because this is
+/// purely a perf hint.
+fn preallocate(file: &fs::File, len: u64) {
+    use std::os::fd::AsRawFd;
+    // SAFETY: file's raw fd is valid for the lifetime of `file`.
+    let _ = unsafe { libc::fallocate(file.as_raw_fd(), 0, 0, len as libc::off_t) };
+}
+
+/// pread at absolute offset. Unlike `read_at`, loops to fill the buffer.
+fn pread_exact(file: &fs::File, buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    let mut written = 0;
+    while written < buf.len() {
+        let n = file.read_at(&mut buf[written..], offset)?;
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short pread"));
+        }
+        written += n;
+        offset += n as u64;
+    }
+    Ok(())
+}
+
+/// pwrite at absolute offset. Loops until the whole slice is written.
+fn pwrite_all(file: &fs::File, buf: &[u8], mut offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    let mut sent = 0;
+    while sent < buf.len() {
+        let n = file.write_at(&buf[sent..], offset)?;
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "zero-byte pwrite"));
+        }
+        sent += n;
+        offset += n as u64;
+    }
+    Ok(())
 }
 
 /// Prefer `<path>/static_files`; fall back to `<path>` itself if it already

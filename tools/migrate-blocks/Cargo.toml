@@ -32,6 +32,7 @@ crossbeam-channel = "0.5"
 eyre = "0.6"
 parking_lot = "0.12"
 rayon = "1.10"
+libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

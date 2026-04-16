@@ -106,7 +106,11 @@ fn main() -> eyre::Result<()> {
 
     let cli = Cli::parse();
     let workers = if cli.workers == 0 {
-        std::thread::available_parallelism().map(|n| n.get().min(16)).unwrap_or(4)
+        // Default to 2× core count capped at 64 — rayon will work-steal across
+        // inter-file (outer par_iter over segments) and intra-file (chunks
+        // within a large file). PCIe 5 NVMes want queue depth in the
+        // hundreds; this gives us a big enough pool to saturate the device.
+        std::thread::available_parallelism().map(|n| (n.get() * 2).min(64)).unwrap_or(16)
     } else {
         cli.workers
     };
