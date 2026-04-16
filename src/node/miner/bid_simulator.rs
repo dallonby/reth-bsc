@@ -15,8 +15,8 @@ use alloy_evm::Evm;
 use alloy_primitives::U256;
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
-use reth::payload::EthPayloadBuilderAttributes;
-use reth::transaction_pool::BestTransactionsAttributes;
+use crate::node::miner::attributes::BscPayloadBuilderAttributes;
+use reth_ethereum::pool::BestTransactionsAttributes;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
 use reth_evm::execute::BlockBuilder;
@@ -24,10 +24,9 @@ use reth_evm::execute::BlockBuilderOutcome;
 use reth_evm::execute::{BlockExecutionError, BlockValidationError};
 use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
 use reth_execution_types::BlockExecutionOutput;
-use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_payload_primitives::{BuiltPayloadExecutedBlock, PayloadBuilderError};
-use reth_primitives::SealedHeader;
-use reth_primitives::TransactionSigned;
+use reth_primitives_traits::SealedHeader;
+use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::SignerRecoverable;
 use reth_provider::StateProviderFactory;
 use reth_provider::{BlockHashReader, HeaderProvider};
@@ -47,7 +46,7 @@ pub struct Bid {
     pub builder: Address,
     pub block_number: u64,
     pub parent_hash: B256,
-    pub txs: Vec<reth_primitives::TransactionSigned>,
+    pub txs: Vec<reth_ethereum_primitives::TransactionSigned>,
     pub blob_sidecars: HashMap<B256, BlobTransactionSidecar>,
     pub un_revertible: Vec<B256>,
     pub gas_used: u64,
@@ -100,8 +99,8 @@ where
         + StateProviderFactory
         + Clone
         + 'static,
-    Pool: reth::transaction_pool::TransactionPool<
-            Transaction: reth::transaction_pool::PoolTransaction<Consensus = TransactionSigned>,
+    Pool: reth_ethereum::pool::TransactionPool<
+            Transaction: reth_ethereum::pool::PoolTransaction<Consensus = TransactionSigned>,
         > + 'static,
 {
     pub fn new(
@@ -308,7 +307,7 @@ where
         &self,
         _bid: &Bid,
         _validator_commission: u64,
-        attributes: EthPayloadBuilderAttributes,
+        attributes: BscPayloadBuilderAttributes,
         mining_ctx: MiningContext,
     ) -> Result<BidRuntime<Pool, BscEvmConfig>, Box<dyn std::error::Error + Send + Sync>> {
         let mut runtime = BidRuntime::new(
@@ -506,7 +505,7 @@ where
 
         // Finish the builder
         let BlockBuilderOutcome { execution_result, hashed_state, trie_updates, block } =
-            match builder.finish(&state_provider).map_err(PayloadBuilderError::other) {
+            match builder.finish(&state_provider, None).map_err(PayloadBuilderError::other) {
                 Ok(outcome) => outcome,
                 Err(e) => {
                     debug!("Failed to finish builder: {:?}", e);
@@ -636,7 +635,7 @@ pub struct BidRuntime<Pool, EvmConfig = BscEvmConfig> {
     pool: Pool,
     evm_config: EvmConfig,
     parent_header: SealedHeader,
-    attributes: EthPayloadBuilderAttributes,
+    attributes: BscPayloadBuilderAttributes,
     builder_config: EthereumBuilderConfig,
     chain_spec: Arc<BscChainSpec>,
     pub bsc_payload: Option<BscBuiltPayload>,
@@ -651,8 +650,8 @@ pub struct BidRuntime<Pool, EvmConfig = BscEvmConfig> {
 
 impl<Pool, EvmConfig> BidRuntime<Pool, EvmConfig>
 where
-    Pool: reth::transaction_pool::TransactionPool<
-            Transaction: reth::transaction_pool::PoolTransaction<Consensus = TransactionSigned>,
+    Pool: reth_ethereum::pool::TransactionPool<
+            Transaction: reth_ethereum::pool::PoolTransaction<Consensus = TransactionSigned>,
         > + Clone
         + 'static,
     EvmConfig: ConfigureEvm<NextBlockEnvCtx = NextBlockEnvAttributes> + 'static,
@@ -666,7 +665,7 @@ where
         bid: Bid,
         pool: Pool,
         evm_config: EvmConfig,
-        attributes: EthPayloadBuilderAttributes,
+        attributes: BscPayloadBuilderAttributes,
         chain_spec: Arc<BscChainSpec>,
         mining_ctx: MiningContext,
     ) -> Self {
@@ -836,12 +835,22 @@ where
             if is_blob_tx {
                 // Get sidecar from bid.blob_sidecars if available and convert to BscBlobTransactionSidecar
                 if let Some(sidecar) = self.bid.blob_sidecars.get(&tx_hash) {
-                    // Insert blob sidecar into pool's blob store
+                    // reth 2.0 made `Pool::insert_blob` private on the concrete Pool
+                    // struct, so we go through the blob store directly. The pool
+                    // stashes it in `crate::shared` at pool-build time.
                     use alloy_eips::eip7594::BlobTransactionSidecarVariant;
-                    if let Err(e) = self.pool.insert_blob(
-                        tx_hash,
-                        BlobTransactionSidecarVariant::Eip4844(sidecar.clone()),
-                    ) {
+                    use reth_transaction_pool::blobstore::BlobStore;
+                    let insert_result = if let Some(store) = crate::shared::get_blob_store() {
+                        store.insert(
+                            tx_hash,
+                            BlobTransactionSidecarVariant::Eip4844(sidecar.clone()),
+                        )
+                    } else {
+                        Err(reth_transaction_pool::blobstore::BlobStoreError::Other(
+                            "blob store not initialized".into(),
+                        ))
+                    };
+                    if let Err(e) = insert_result {
                         debug!("Failed to insert blob sidecar for tx {:?}: {:?}", tx_hash, e);
                         if from_pool {
                             trace!("bidSimulator: failed to insert blob sidecar, ignore tx:{}, error:{}, recovered tx:{:?}", tx_hash, e, recovered_tx);
@@ -892,7 +901,7 @@ where
     fn fill_tx_from_pool<B>(
         &mut self,
         builder: &mut B,
-        bid_txs: Vec<reth_primitives::TransactionSigned>,
+        bid_txs: Vec<reth_ethereum_primitives::TransactionSigned>,
         block_gas_limit: u64,
         delay_ms: u64,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -932,7 +941,7 @@ where
 
         let mut sender_txs_map: HashMap<
             Address,
-            Vec<Arc<reth::transaction_pool::ValidPoolTransaction<Pool::Transaction>>>,
+            Vec<Arc<reth_ethereum::pool::ValidPoolTransaction<Pool::Transaction>>>,
         > = HashMap::new();
 
         for pool_tx in best_tx_list {

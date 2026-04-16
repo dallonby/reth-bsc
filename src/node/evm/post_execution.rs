@@ -12,9 +12,8 @@ use crate::evm::precompiles;
 use crate::evm::transaction::BscTxEnv;
 use crate::system_contracts::{SLASH_CONTRACT, SYSTEM_REWARD_CONTRACT, STAKE_HUB_CONTRACT, feynman_fork::{ValidatorElectionInfo, get_top_validators_by_voting_power, ElectedValidators}};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
-use reth_evm::{eth::receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx}, execute::BlockExecutionError, Database, Evm, FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, block::StateChangeSource};
-use reth_primitives::{TransactionSigned, Transaction};
-use reth_revm::State;
+use reth_evm::{eth::receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx}, execute::BlockExecutionError, Evm, FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, block::StateChangeSource};
+use reth_ethereum_primitives::{TransactionSigned, Transaction};
 use crate::node::evm::ResultAndState;
 use revm::{
     context::{BlockEnv, TxEnv},
@@ -22,7 +21,6 @@ use revm::{
     Database as RevmDatabase,
     DatabaseCommit,
 };
-use revm_database::DatabaseCommitExt;
 use alloy_consensus::{Header, TxReceipt, Transaction as AlloyTransaction, SignableTransaction};
 use alloy_primitives::{Address, BlockNumber, TxKind, U256, hex};
 use std::collections::HashMap;
@@ -39,11 +37,10 @@ fn turn_length_matches(turn_length_from_header: Option<u8>, expected_turn_length
 }
 
 
-impl<'a, DB, EVM, Spec, R: ReceiptBuilder> BscBlockExecutor<'a, EVM, Spec, R>
+impl<'a, EVM, Spec, R: ReceiptBuilder> BscBlockExecutor<'a, EVM, Spec, R>
 where
-    DB: Database + 'a,
     EVM: Evm<
-        DB = &'a mut State<DB>,
+        DB: alloy_evm::block::StateDB + 'a,
         Tx: FromRecoveredTx<R::Transaction>
                 + FromRecoveredTx<TransactionSigned>
                 + FromTxWithEncoded<TransactionSigned>,
@@ -427,7 +424,7 @@ where
         self.executor_metrics.system_tx_gas_used_total.increment(gas_used);
 
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
-            tx: signed_tx.as_ref().unwrap(),
+            tx_type: signed_tx.as_ref().unwrap().tx_type(),
             evm: &self.evm,
             result,
             state: &state,
@@ -446,26 +443,37 @@ where
         &mut self,
         validator: Address,
     ) -> Result<(), BlockExecutionError> {
-        let system_account = self
+        // Trait-only rewrite of the old CacheAccount::drain_balance +
+        // apply_transition pair: inspect SYSTEM_ADDRESS via Database::basic,
+        // then move its balance to the validator via DatabaseCommitExt
+        // (drain_balances + increment_balances). drain_balances returns u128
+        // per account which is plenty for BSC rewards; we preserve the full
+        // U256 reward for the downstream split/metric math.
+        let info = self
             .evm
             .db_mut()
-            .load_cache_account(SYSTEM_ADDRESS)
-            .map_err(BlockExecutionError::other)?;
-
-        if system_account.account.is_none() ||
-            system_account.account.as_ref().unwrap().info.balance == U256::ZERO
-        {
+            .basic(SYSTEM_ADDRESS)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        if info.balance == U256::ZERO {
             return Ok(());
         }
+        // The old CacheAccount::drain_balance returned (u128, TransitionAccount)
+        // — match that type so the downstream distribute_to_system/validator
+        // calls (both u128) keep working unchanged.
+        let mut block_reward: u128 = info
+            .balance
+            .try_into()
+            .map_err(|_| BlockExecutionError::msg("system reward balance overflows u128"))?;
 
-        let (mut block_reward, mut transition) = system_account.drain_balance();
-        transition.info = None;
-        self.evm.db_mut().apply_transition(vec![(SYSTEM_ADDRESS, transition)]);
-        let balance_increment = vec![(validator, block_reward)];
-
+        use revm::database_interface::DatabaseCommitExt;
         self.evm
             .db_mut()
-            .increment_balances(balance_increment)
+            .drain_balances(core::iter::once(SYSTEM_ADDRESS))
+            .map_err(BlockExecutionError::other)?;
+        self.evm
+            .db_mut()
+            .increment_balances(core::iter::once((validator, block_reward)))
             .map_err(BlockExecutionError::other)?;
 
         let system_reward_balance = self

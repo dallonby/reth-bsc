@@ -155,8 +155,10 @@ impl Snapshot {
             return None; // non-continuous block
         }
 
-        // Clone base.
-        let original_snap = self.clone();
+        // Clone base. Only one clone: we mutate `snap`, and the original is
+        // still reachable through `self` (this method takes `&self`) for the
+        // trace log below. Previously cloned twice, burning ~5 KB + HashMap/
+        // BTreeMap copies per block of allocator churn.
         let mut snap = self.clone();
         snap.block_hash = next_header.hash_slow();
         snap.block_number = block_number;
@@ -298,7 +300,7 @@ impl Snapshot {
         tracing::trace!(
             "Succeed to apply snapshot, block_number: {:?}, original_snap: {:?}, new_snap: {:?}",
             block_number,
-            original_snap,
+            self,
             snap
         );
         Some(snap)
@@ -452,8 +454,8 @@ impl Compress for Snapshot {
 }
 
 impl Decompress for Snapshot {
-    fn decompress(value: &[u8]) -> Result<Self, DatabaseError> {
-        serde_cbor::from_slice(value).map_err(|_| DatabaseError::Decode)
+    fn decompress(value: &[u8]) -> Result<Self, reth_codecs::DecompressError> {
+        serde_cbor::from_slice(value).map_err(reth_codecs::DecompressError::new)
     }
 }
 

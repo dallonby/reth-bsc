@@ -10,10 +10,12 @@ use crate::{
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
 use handshake::BscHandshake;
-use reth::{
-    api::{FullNodeTypes, TxTy},
-    builder::{components::NetworkBuilder, BuilderContext},
-    transaction_pool::{PoolTransaction, TransactionPool},
+use reth_ethereum::{
+    node::{
+        api::{FullNodeTypes, TxTy},
+        builder::{components::NetworkBuilder, BuilderContext},
+    },
+    pool::{PoolTransaction, TransactionPool},
 };
 use reth_discv4::Discv4Config;
 use reth_engine_primitives::ConsensusEngineHandle;
@@ -22,7 +24,7 @@ use reth_ethereum_primitives::PooledTransactionVariant;
 use reth_network::{NetworkConfig, NetworkHandle, NetworkManager};
 use reth_network_api::PeersInfo;
 use reth_provider::{BlockNumReader, HeaderProvider, StateProviderFactory};
-use reth_primitives::TransactionSigned;
+use reth_ethereum_primitives::TransactionSigned;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, info, warn};
@@ -59,7 +61,7 @@ mod rlp {
     use alloy_primitives::U128;
     use alloy_rlp::{RlpDecodable, RlpEncodable};
     use alloy_rpc_types::Withdrawals;
-    use reth_primitives::TransactionSigned;
+    use reth_ethereum_primitives::TransactionSigned;
     use std::borrow::Cow;
 
     #[derive(RlpEncodable, RlpDecodable)]
@@ -148,10 +150,6 @@ impl NewBlockPayload for BscNewBlock {
 
     fn block(&self) -> &Self::Block {
         &self.0.block
-    }
-
-    fn td(&self) -> Option<U256> {
-        Some(U256::from(self.0.td.to::<u128>()))
     }
 }
 
@@ -296,7 +294,7 @@ impl BscNetworkBuilder {
         }
 
         // Spawn the critical ImportService task exactly like the official implementation
-        ctx.task_executor().spawn_critical("block import", async move {
+        ctx.task_executor().spawn_critical_task("block import", async move {
             let handle = engine_handle_rx
                 .lock()
                 .await
@@ -319,7 +317,7 @@ impl BscNetworkBuilder {
         });
 
         // TODO: update network with the latest canonical head, but has a fork id issue, can fix it later.
-        let mut network_builder = network_builder
+        let network_builder = network_builder
             .boot_nodes(ctx.chain_spec().bootnodes().unwrap_or_default())
             .set_head(ctx.chain_spec().head())
             .with_pow()
@@ -330,18 +328,21 @@ impl BscNetworkBuilder {
             .add_rlpx_sub_protocol(bsc_protocol::protocol::handler::BscProtocolHandlerV2)
             .add_rlpx_sub_protocol(bsc_protocol::protocol::handler::BscProtocolHandlerV1);
 
-        // Apply proxyed peer IDs if configured
-        if let Some(proxyed_peer_ids) = crate::shared::get_proxyed_peer_ids() {
-            network_builder = network_builder.proxied_peers(proxyed_peer_ids.clone());
-        }
+        // reth 2.0 dropped NetworkConfigBuilder::proxied_peers and
+        // PeersConfig.proxyed_node_ids (BSC-specific extension to the bnb-chain
+        // fork). We keep the registry-side proxied-peer behaviour by pulling
+        // the IDs from the global config directly (set via CLI in
+        // crate::shared::get_proxyed_peer_ids); the upstream peer manager has
+        // no notion of this category, so it just ignores them.
 
         let peer_id = network_builder.get_peer_id();
         let mut network_config = ctx.build_network_config(network_builder);
         network_config.status.forkid = network_config.fork_filter.current();
 
-        // Initialize BSC protocol registry with proxied peers from config
-        // This mirrors the same functionality in the main peer manager
-        let proxied_node_ids = network_config.peers_config.proxyed_node_ids.clone();
+        // Initialize BSC protocol registry with proxied peers from CLI/config.
+        let proxied_node_ids: Vec<_> = crate::shared::get_proxyed_peer_ids()
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default();
         if !proxied_node_ids.is_empty() {
             tracing::info!(
                 target: "bsc::net",
@@ -355,8 +356,12 @@ impl BscNetworkBuilder {
 
         let provider = ctx.provider();
         if let Ok(number) = provider.best_block_number() {
-            let td = provider.header_td_by_number(number).unwrap_or_default();
-            network_config.status.total_difficulty = td;
+            // reth 2.0 dropped HeaderProvider::header_td_by_number; we source
+            // TD from our local accumulator (crate::consensus::parlia::td_store).
+            // None until the first canonical TD is recorded — matches eth/69
+            // peers that don't advertise TD at all.
+            network_config.status.total_difficulty =
+                crate::consensus::parlia::td_store::TdStore::best_by_number(number);
         }
         debug!(
             target: "bsc::net",
@@ -426,7 +431,7 @@ fn spawn_evn_sync_watcher<Node>(
         .unwrap_or(30);
     let provider = ctx.provider().clone();
     let chain_spec = ctx.chain_spec().clone();
-    ctx.task_executor().spawn_critical("evn-sync-watcher", async move {
+    ctx.task_executor().spawn_critical_task("evn-sync-watcher", async move {
         use std::time::{SystemTime, UNIX_EPOCH, Duration};
         use alloy_consensus::BlockHeader;
 
@@ -510,7 +515,7 @@ async fn register_nodeids_actions<P: StateProviderFactory>(
     let mut signed_batch: Vec<TransactionSigned> = Vec::new();
     if !to_add.is_empty() {
         let (_to, data) = crate::system_contracts::encode_add_node_ids_call(to_add.clone());
-        let mut tx = reth_primitives::Transaction::Legacy(alloy_consensus::TxLegacy {
+        let mut tx = reth_ethereum_primitives::Transaction::Legacy(alloy_consensus::TxLegacy {
             chain_id: Some(chain_id),
             nonce: next_nonce,
             gas_price: 1000000000,
@@ -525,7 +530,7 @@ async fn register_nodeids_actions<P: StateProviderFactory>(
         let gas = crate::shared::ipc_estimate_gas(req, None, None).await?;
         let gas_limit = std::cmp::min(gas, U256::from(u64::MAX / 2)).to::<u64>();
         debug!(target: "bsc::evn", "Estimated gas for transaction, to_add: {:?}, gas: {}, gas_limit: {}", to_add, gas, gas_limit);
-        if let reth_primitives::Transaction::Legacy(inner) = &mut tx {
+        if let reth_ethereum_primitives::Transaction::Legacy(inner) = &mut tx {
             inner.gas_limit = gas_limit;
         }
         let signed = sign_system_transaction(tx)?;
@@ -537,7 +542,7 @@ async fn register_nodeids_actions<P: StateProviderFactory>(
 
     if !to_remove.is_empty() {
         let (_to, data) = crate::system_contracts::encode_remove_node_ids_call(to_remove.clone());
-        let mut tx = reth_primitives::Transaction::Legacy(alloy_consensus::TxLegacy {
+        let mut tx = reth_ethereum_primitives::Transaction::Legacy(alloy_consensus::TxLegacy {
             chain_id: Some(chain_id),
             nonce: next_nonce,
             gas_price: 1000000000,
@@ -552,7 +557,7 @@ async fn register_nodeids_actions<P: StateProviderFactory>(
         let gas = crate::shared::ipc_estimate_gas(req, None, None).await?;
         let gas_limit = std::cmp::min(gas, U256::from(u64::MAX / 2)).to::<u64>();
         debug!(target: "bsc::evn", "Estimated gas for transaction, to_remove: {:?}, gas: {}, gas_limit: {}", to_remove, gas, gas_limit);
-        if let reth_primitives::Transaction::Legacy(inner) = &mut tx {
+        if let reth_ethereum_primitives::Transaction::Legacy(inner) = &mut tx {
             inner.gas_limit = gas_limit;
         }
         let signed = sign_system_transaction(tx)?;

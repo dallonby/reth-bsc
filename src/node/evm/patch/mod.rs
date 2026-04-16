@@ -1,8 +1,10 @@
 use alloy_primitives::{address, b256, Address, B256, U256};
 use reth_evm::block::BlockExecutionError;
 use reth_primitives_traits::SignedTransaction;
-use reth_revm::{db::states::StorageSlot, State};
-use revm::Database;
+use revm::{
+    state::{Account, EvmStorageSlot},
+    Database, DatabaseCommit,
+};
 use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 use tracing::trace;
 
@@ -676,11 +678,11 @@ static CHAPEL_PATCHES_AFTER_TX: LazyLock<HashMap<B256, StoragePatch>> = LazyLock
 
 pub(crate) fn patch_mainnet_before_tx<DB, T>(
     transaction: &T,
-    state: &mut State<DB>,
+    state: &mut DB,
 ) -> Result<(), BlockExecutionError>
 where
     T: SignedTransaction,
-    DB: Database,
+    DB: Database + DatabaseCommit,
     <DB as revm::Database>::Error: Sync + Send + 'static,
 {
     let tx_hash = transaction.tx_hash();
@@ -694,10 +696,10 @@ where
 
 pub(crate) fn patch_mainnet_after_tx<DB, T>(
     transaction: &T,
-    state: &mut State<DB>,
+    state: &mut DB,
 ) -> Result<(), BlockExecutionError>
 where
-    DB: Database,
+    DB: Database + DatabaseCommit,
     <DB as revm::Database>::Error: Sync + Send + 'static,
     T: SignedTransaction,
 {
@@ -712,11 +714,11 @@ where
 
 pub(crate) fn patch_chapel_before_tx<DB, T>(
     transaction: &T,
-    state: &mut State<DB>,
+    state: &mut DB,
 ) -> Result<(), BlockExecutionError>
 where
     T: SignedTransaction,
-    DB: Database,
+    DB: Database + DatabaseCommit,
     <DB as revm::Database>::Error: Sync + Send + 'static,
 {
     let tx_hash = transaction.tx_hash();
@@ -730,10 +732,10 @@ where
 
 pub(crate) fn patch_chapel_after_tx<DB, T>(
     transaction: &T,
-    state: &mut State<DB>,
+    state: &mut DB,
 ) -> Result<(), BlockExecutionError>
 where
-    DB: Database,
+    DB: Database + DatabaseCommit,
     <DB as revm::Database>::Error: Sync + Send + 'static,
     T: SignedTransaction,
 {
@@ -747,29 +749,32 @@ where
 }
 
 fn apply_patch<DB>(
-    state: &mut State<DB>,
+    state: &mut DB,
     address: Address,
     storage: &HashMap<U256, U256>,
 ) -> Result<(), BlockExecutionError>
 where
-    DB: Database,
+    DB: Database + DatabaseCommit,
     <DB as revm::Database>::Error: Sync + Send + 'static,
 {
-    let account = state.load_cache_account(address).map_err(BlockExecutionError::other)?;
-    let account_change = account.change(
-        account.account_info().unwrap_or_default(),
-        storage
-            .iter()
-            .map(|(key, value)| {
-                (
-                    *key,
-                    StorageSlot { previous_or_original_value: U256::ZERO, present_value: *value },
-                )
-            })
-            .collect(),
-    );
-
-    state.apply_transition(vec![(address, account_change)]);
+    // Trait-only rewrite of the old State::load_cache_account + apply_transition
+    // path (reth 2.0 made BscBlockExecutor generic over any StateDB, so we no
+    // longer see the concrete State<DB>). Build a touched Account with just the
+    // patched storage slots and flush via DatabaseCommit::commit_iter — State
+    // routes that through apply_evm_state_iter internally, matching the old
+    // transition semantics.
+    let info = state
+        .basic(address)
+        .map_err(BlockExecutionError::other)?
+        .unwrap_or_default();
+    let mut account = Account::default();
+    account.info = info;
+    account.storage = storage
+        .iter()
+        .map(|(key, value)| (*key, EvmStorageSlot::new_changed(U256::ZERO, *value, 0)))
+        .collect();
+    account.mark_touch();
+    state.commit_iter(&mut core::iter::once((address, account)));
     Ok(())
 }
 
@@ -784,10 +789,10 @@ impl HertzPatchManager {
         Self { is_mainnet }
     }
 
-    pub fn patch_before_tx<T, DB>(&self, transaction: &T, state: &mut State<DB>) -> Result<(), BlockExecutionError>
+    pub fn patch_before_tx<T, DB>(&self, transaction: &T, state: &mut DB) -> Result<(), BlockExecutionError>
     where
         T: SignedTransaction,
-        DB: Database,
+        DB: Database + DatabaseCommit,
         <DB as revm::Database>::Error: Sync + Send + 'static,
     {
         if self.is_mainnet {
@@ -799,10 +804,10 @@ impl HertzPatchManager {
     }
     
     /// Apply patches after transaction execution
-    pub fn patch_after_tx<T, DB>(&self, transaction: &T, state: &mut State<DB>) -> Result<(), BlockExecutionError>
+    pub fn patch_after_tx<T, DB>(&self, transaction: &T, state: &mut DB) -> Result<(), BlockExecutionError>
     where
         T: SignedTransaction,
-        DB: Database,
+        DB: Database + DatabaseCommit,
         <DB as revm::Database>::Error: Sync + Send + 'static,
     {
         if self.is_mainnet {

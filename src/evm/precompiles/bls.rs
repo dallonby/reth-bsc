@@ -38,12 +38,20 @@ fn bls_signature_validation_run(input: &[u8], gas_limit: u64) -> PrecompileResul
         return revert()
     }
 
-    let msg_hash: &Vec<u8> = &input[..BLS_MSG_HASH_LENGTH as usize].to_vec();
-    let signature = &input[BLS_MSG_HASH_LENGTH as usize..msg_and_sig_length as usize].to_vec();
-    let pub_keys_data = &input[msg_and_sig_length as usize..].to_vec();
+    // bls_on_arkworks' Octets/PublicKey/Signature are type aliases for
+    // `Vec<u8>`, so we can't escape owning the msg hash and signature. But we
+    // can do it with one allocation each (previous version round-tripped
+    // through `.to_vec()` up to three times per value) and we can index into
+    // `input` directly for per-key slicing instead of pre-cloning the whole
+    // pub_keys region. We also compute the DST owned-Vec once rather than
+    // rebuilding it on every `verify` / `aggregate_verify` call.
+    let msg_hash = input[..BLS_MSG_HASH_LENGTH as usize].to_vec();
+    let signature = input[BLS_MSG_HASH_LENGTH as usize..msg_and_sig_length as usize].to_vec();
+    let pub_keys_data = &input[msg_and_sig_length as usize..];
+    let dst = BLS_DST.to_vec();
 
     // check signature format
-    if bls::signature_to_point(&signature.to_vec()).is_err() {
+    if bls::signature_to_point(&signature).is_err() {
         return revert()
     }
 
@@ -53,13 +61,14 @@ fn bls_signature_validation_run(input: &[u8], gas_limit: u64) -> PrecompileResul
 
     // check pubkey format and push to pub_keys
     for i in 0..pub_key_count {
-        let pub_key = &pub_keys_data[i as usize * BLS_SINGLE_PUBKEY_LENGTH as usize..
-            (i + 1) as usize * BLS_SINGLE_PUBKEY_LENGTH as usize];
-        if !bls::key_validate(&pub_key.to_vec()) {
+        let start = i as usize * BLS_SINGLE_PUBKEY_LENGTH as usize;
+        let end = (i as usize + 1) * BLS_SINGLE_PUBKEY_LENGTH as usize;
+        let pub_key = pub_keys_data[start..end].to_vec();
+        if !bls::key_validate(&pub_key) {
             return revert()
         }
-        pub_keys.push(pub_key.to_vec());
-        msg_hashes.push(msg_hash.clone().to_vec());
+        pub_keys.push(pub_key);
+        msg_hashes.push(msg_hash.clone());
     }
     if pub_keys.is_empty() {
         return revert()
@@ -67,8 +76,8 @@ fn bls_signature_validation_run(input: &[u8], gas_limit: u64) -> PrecompileResul
 
     // verify signature
     let mut output = Bytes::from(vec![1]);
-    if (pub_keys.len() == 1 && !bls::verify(&pub_keys[0], msg_hash, signature, &BLS_DST.to_vec())) ||
-        !bls::aggregate_verify(pub_keys, msg_hashes, signature, &BLS_DST.to_vec())
+    if (pub_keys.len() == 1 && !bls::verify(&pub_keys[0], &msg_hash, &signature, &dst)) ||
+        !bls::aggregate_verify(pub_keys, msg_hashes, &signature, &dst)
     {
         output = Bytes::from(vec![]);
     }

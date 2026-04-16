@@ -2,9 +2,8 @@ use super::executor::BscBlockExecutor;
 use crate::evm::transaction::BscTxEnv;
 
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
-use reth_evm::{eth::receipt_builder::ReceiptBuilder, execute::BlockExecutionError, Database, Evm, FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
-use reth_primitives::TransactionSigned;
-use reth_revm::State;
+use reth_evm::{eth::receipt_builder::ReceiptBuilder, execute::BlockExecutionError, Evm, FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
+use reth_ethereum_primitives::TransactionSigned;
 use revm::{
     context::{BlockEnv, TxEnv},
     context_interface::block::Block,
@@ -20,7 +19,7 @@ use crate::node::evm::util::HEADER_CACHE_READER;
 use crate::system_contracts::feynman_fork::ValidatorElectionInfo;
 use std::{collections::HashMap, sync::{LazyLock, Mutex}};
 use schnellru::{ByLength, LruMap};
-use reth_primitives::GotExpected;
+use reth_primitives_traits::GotExpected;
 use blst::{
     min_pk::{PublicKey, Signature},
     BLST_ERROR,
@@ -41,11 +40,10 @@ pub static TURN_LENGTH_CACHE: LazyLock<Mutex<TurnLengthCache>> = LazyLock::new(|
     Mutex::new(LruMap::new(ByLength::new(1024)))
 });
 
-impl<'a, DB, EVM, Spec, R: ReceiptBuilder> BscBlockExecutor<'a, EVM, Spec, R>
+impl<'a, EVM, Spec, R: ReceiptBuilder> BscBlockExecutor<'a, EVM, Spec, R>
 where
-    DB: Database + 'a,
     EVM: Evm<
-        DB = &'a mut State<DB>,
+        DB: alloy_evm::block::StateDB + 'a,
         Tx: FromRecoveredTx<R::Transaction>
                 + FromRecoveredTx<TransactionSigned>
                 + FromTxWithEncoded<TransactionSigned>,

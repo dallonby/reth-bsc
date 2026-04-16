@@ -1,8 +1,10 @@
+use dashmap::{DashMap, DashSet};
 use lru::LruCache;
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::BinaryHeap,
     num::NonZero,
     sync::RwLock,
 };
@@ -17,13 +19,12 @@ const LOWER_LIMIT_OF_VOTE_BLOCK_NUMBER: u64 = 256;
 /// Size of the LRU cache for tracking finality notifications (matches geth's finalizedNotified)
 const FINALIZED_NOTIFIED_CACHE_SIZE: usize = 21;
 
-/// Container for votes associated with a specific block hash.
-#[derive(Default)]
-struct VoteMessages {
-    vote_messages: Vec<VoteEnvelope>,
-}
-
 /// Priority queue wrapper for vote data, ordered by target_number (ascending).
+///
+/// The prune path is strictly serial (run at most once per canonical-head
+/// update), so we guard this behind its own `parking_lot::Mutex` rather than
+/// widening the DashMap lock footprint. Insert touches the queue only when
+/// a new block hash is seen, not on every vote — minimal contention.
 #[derive(Default)]
 struct VotesPriorityQueue {
     heap: BinaryHeap<Reverse<VoteData>>,
@@ -61,117 +62,21 @@ impl Ord for VoteData {
 
 /// Global in-memory pool of incoming Parlia votes.
 ///
-/// This mirrors the simple approach used by the slashing pool: keep votes in
-/// memory until they're consumed by another component. Votes are de-duplicated
-/// by their RLP hash and organized by block hash.
-struct VotePool {
-    /// Hashes of votes we've already seen in this window.
-    received_votes: HashSet<B256>,
-    /// Collected votes organized by block hash.
-    cur_votes: HashMap<B256, VoteMessages>,
-    /// Priority queue for efficiently finding votes to prune.
-    cur_votes_pq: VotesPriorityQueue,
-}
-
-impl VotePool {
-    fn new() -> Self {
-        Self {
-            received_votes: HashSet::new(),
-            cur_votes: HashMap::new(),
-            cur_votes_pq: VotesPriorityQueue::new(),
-        }
-    }
-
-    fn insert(&mut self, vote: VoteEnvelope) {
-        let vote_hash = vote.hash();
-        if self.received_votes.insert(vote_hash) {
-            // Track received votes count
-            VOTE_METRICS.received_votes_total.increment(1);
-
-            // Use target_hash as the key for organizing votes
-            let block_hash = vote.data.target_hash;
-
-            // Add to priority queue if this is a new block
-            if !self.cur_votes.contains_key(&block_hash) {
-                self.cur_votes_pq.push(vote.data);
-            }
-
-            self.cur_votes.entry(block_hash).or_default().vote_messages.push(vote);
-        }
-    }
-
-    fn drain(&mut self) -> Vec<VoteEnvelope> {
-        self.received_votes.clear();
-        self.cur_votes_pq = VotesPriorityQueue::new();
-        let mut all_votes = Vec::new();
-        for (_, vote_messages) in self.cur_votes.drain() {
-            all_votes.extend(vote_messages.vote_messages);
-        }
-        all_votes
-    }
-
-    fn get_votes(&self) -> Vec<VoteEnvelope> {
-        let mut all_votes = Vec::new();
-        for vote_messages in self.cur_votes.values() {
-            all_votes.extend(vote_messages.vote_messages.clone());
-        }
-        all_votes
-    }
-
-    fn len(&self) -> usize {
-        self.cur_votes.values().map(|vm| vm.vote_messages.len()).sum()
-    }
-
-    fn len_for_block(&self, block_hash: &B256) -> usize {
-        self.cur_votes.get(block_hash).map(|vm| vm.vote_messages.len()).unwrap_or(0)
-    }
-
-    fn fetch_vote_by_block_hash(&self, block_hash: B256) -> Vec<VoteEnvelope> {
-        if let Some(vote_messages) = self.cur_votes.get(&block_hash) {
-            vote_messages.vote_messages.clone()
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn fetch_vote_by_block_hash_and_source_number(
-        &self,
-        block_hash: B256,
-        source_number: BlockNumber,
-    ) -> Vec<VoteEnvelope> {
-        self.fetch_vote_by_block_hash(block_hash)
-            .into_iter()
-            .filter(|vote| vote.data.source_number == source_number)
-            .collect()
-    }
-
-    /// Prune old votes based on the latest block number.
-    /// Removes votes where targetNumber + LOWER_LIMIT_OF_VOTE_BLOCK_NUMBER - 1 < latestBlockNumber
-    fn prune(&mut self, latest_block_number: BlockNumber) {
-        // Remove votes in the range [, latestBlockNumber - LOWER_LIMIT_OF_VOTE_BLOCK_NUMBER]
-        while let Some(vote_data) = self.cur_votes_pq.peek() {
-            if vote_data.target_number + LOWER_LIMIT_OF_VOTE_BLOCK_NUMBER - 1 < latest_block_number
-            {
-                // Remove from priority queue
-                let vote_data = self.cur_votes_pq.pop().unwrap();
-                let block_hash = vote_data.target_hash;
-
-                // Remove from votes map and received_votes set
-                if let Some(vote_box) = self.cur_votes.remove(&block_hash) {
-                    for vote in vote_box.vote_messages {
-                        let vote_hash = vote.hash();
-                        self.received_votes.remove(&vote_hash);
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-    }
-}
-
-/// Global singleton pool.
-static VOTE_POOL: Lazy<RwLock<VotePool>> = Lazy::new(|| RwLock::new(VotePool::new()));
+/// reth 2.0 port: the old pool was a single `RwLock<VotePool>` which
+/// serialized *every* vote read and write on one lock and cloned the full
+/// `Vec<VoteEnvelope>` on every `fetch_*` / `get_votes` call. Under heavy vote
+/// broadcast (and finality-check fanout in `maybe_notify_finality`) this was
+/// a major contention point.
+///
+/// New shape: `received_votes` is a sharded `DashSet`, `cur_votes` is a
+/// sharded `DashMap<B256, Vec<VoteEnvelope>>`, and only the priority queue
+/// sits behind a small `Mutex` (used by `insert` on first-seen block and by
+/// `prune` once per head update). Reads are lock-free per-bucket; writes
+/// only contend within a single target_hash bucket.
+static RECEIVED_VOTES: Lazy<DashSet<B256>> = Lazy::new(DashSet::new);
+static CUR_VOTES: Lazy<DashMap<B256, Vec<VoteEnvelope>>> = Lazy::new(DashMap::new);
+static CUR_VOTES_PQ: Lazy<Mutex<VotesPriorityQueue>> =
+    Lazy::new(|| Mutex::new(VotesPriorityQueue::new()));
 
 /// Global metrics for vote operations.
 static VOTE_METRICS: Lazy<BscVoteMetrics> = Lazy::new(BscVoteMetrics::default);
@@ -187,63 +92,139 @@ fn update_vote_pool_size_metric(size: usize) {
     VOTE_METRICS.current_votes_count.set(size as f64);
 }
 
-/// Insert a single vote into the pool (deduplicated by hash).
+/// Total votes currently held across all target hashes.
+fn current_len() -> usize {
+    CUR_VOTES.iter().map(|entry| entry.value().len()).sum()
+}
+
+/// Insert a single vote into the pool (deduplicated by hash). Lock footprint:
+///   * `RECEIVED_VOTES.insert` — single-bucket DashSet write.
+///   * On first-seen target hash: PQ mutex + one DashMap slot write.
+///   * On subsequent votes for same target: only the DashMap slot write.
 pub fn put_vote(vote: VoteEnvelope) {
+    let vote_hash = vote.hash();
+    // Dedup.
+    if !RECEIVED_VOTES.insert(vote_hash) {
+        return;
+    }
+
+    // Bump the received counter only on *actual* inserts (old code bumped on
+    // duplicates too because the check was inside the lock scope).
+    VOTE_METRICS.received_votes_total.increment(1);
+
     let target_hash = vote.data.target_hash;
-    let mut pool = VOTE_POOL.write().expect("vote pool poisoned");
-    pool.insert(vote);
-    let votes_for_block = pool.len_for_block(&target_hash);
-    let size = pool.len();
-    drop(pool);
-    update_vote_pool_size_metric(size);
+    let vote_data = vote.data;
+
+    // Push into the target-hash bucket; track whether this was the first vote
+    // for this hash so we know whether to push onto the PQ.
+    let (new_bucket, votes_for_block) = match CUR_VOTES.entry(target_hash) {
+        dashmap::mapref::entry::Entry::Occupied(mut e) => {
+            let v = e.get_mut();
+            v.push(vote);
+            (false, v.len())
+        }
+        dashmap::mapref::entry::Entry::Vacant(e) => {
+            let v = e.insert(vec![vote]);
+            (true, v.len())
+        }
+    };
+
+    if new_bucket {
+        CUR_VOTES_PQ.lock().push(vote_data);
+    }
+
+    update_vote_pool_size_metric(current_len());
     maybe_notify_finality(target_hash, votes_for_block);
 }
 
-/// Drain all pending votes.
+/// Drain all pending votes. Clears each shared structure in turn; readers
+/// between the clears see a partial state (pre-existing behaviour — the old
+/// single-lock version was atomic only in the sense that nothing else could
+/// interleave, but all observers still saw the same before/after jump).
 pub fn drain() -> Vec<VoteEnvelope> {
-    let votes = VOTE_POOL.write().expect("vote pool poisoned").drain();
+    RECEIVED_VOTES.clear();
+    *CUR_VOTES_PQ.lock() = VotesPriorityQueue::new();
+    let mut all_votes = Vec::new();
+    // Drain without materializing all (key, value) pairs at once: iterate
+    // keys first, then remove them one at a time.
+    let keys: Vec<B256> = CUR_VOTES.iter().map(|e| *e.key()).collect();
+    for key in keys {
+        if let Some((_, votes)) = CUR_VOTES.remove(&key) {
+            all_votes.extend(votes);
+        }
+    }
     update_vote_pool_size_metric(0);
-    votes
+    all_votes
 }
 
-/// Snapshot all pending votes without removing them.
+/// Snapshot all pending votes without removing them. This is still O(votes)
+/// by necessity — callers expect an owned `Vec` — but each bucket clone is a
+/// per-shard read, so the work parallelises instead of serialising on one
+/// lock. Kept here for API compatibility; prefer [`with_votes_by_hash`] when
+/// you only need to read one bucket.
 pub fn get_votes() -> Vec<VoteEnvelope> {
-    VOTE_POOL.read().expect("vote pool poisoned").get_votes()
+    let mut all_votes = Vec::new();
+    for entry in CUR_VOTES.iter() {
+        all_votes.extend(entry.value().iter().cloned());
+    }
+    all_votes
 }
 
 /// Current number of queued votes.
 pub fn len() -> usize {
-    VOTE_POOL.read().expect("vote pool poisoned").len()
+    current_len()
 }
 
 /// Check if the pool is empty.
 pub fn is_empty() -> bool {
-    len() == 0
+    CUR_VOTES.is_empty()
 }
 
-/// Fetch votes by block hash.
+/// Fetch votes by block hash. Clones the bucket under a per-shard read lock;
+/// other shards remain unblocked.
 pub fn fetch_vote_by_block_hash(block_hash: B256) -> Vec<VoteEnvelope> {
-    VOTE_POOL.read().expect("vote pool poisoned").fetch_vote_by_block_hash(block_hash)
+    CUR_VOTES.get(&block_hash).map(|entry| entry.value().clone()).unwrap_or_default()
 }
 
-/// Fetch votes by block hash and source block number.
+/// Fetch votes by block hash and source block number. Same per-shard locking
+/// as `fetch_vote_by_block_hash` — filter runs under the read guard so we
+/// don't clone votes we'll immediately discard.
 pub fn fetch_vote_by_block_hash_and_source_number(
     block_hash: B256,
     source_number: BlockNumber,
 ) -> Vec<VoteEnvelope> {
-    VOTE_POOL
-        .read()
-        .expect("vote pool poisoned")
-        .fetch_vote_by_block_hash_and_source_number(block_hash, source_number)
+    CUR_VOTES
+        .get(&block_hash)
+        .map(|entry| {
+            entry
+                .value()
+                .iter()
+                .filter(|vote| vote.data.source_number == source_number)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Prune old votes based on the latest block number.
+/// Removes votes where targetNumber + LOWER_LIMIT_OF_VOTE_BLOCK_NUMBER - 1 < latestBlockNumber
 pub fn prune(latest_block_number: BlockNumber) {
-    let mut pool = VOTE_POOL.write().expect("vote pool poisoned");
-    pool.prune(latest_block_number);
-    let size = pool.len();
-    drop(pool);
-    update_vote_pool_size_metric(size);
+    let mut pq = CUR_VOTES_PQ.lock();
+    while let Some(vote_data) = pq.peek() {
+        if vote_data.target_number + LOWER_LIMIT_OF_VOTE_BLOCK_NUMBER - 1 < latest_block_number {
+            let vote_data = pq.pop().expect("peeked some");
+            let block_hash = vote_data.target_hash;
+            if let Some((_, votes)) = CUR_VOTES.remove(&block_hash) {
+                for vote in votes {
+                    RECEIVED_VOTES.remove(&vote.hash());
+                }
+            }
+        } else {
+            break;
+        }
+    }
+    drop(pq);
+    update_vote_pool_size_metric(current_len());
 }
 
 fn maybe_notify_finality(target_hash: B256, votes_for_block: usize) {

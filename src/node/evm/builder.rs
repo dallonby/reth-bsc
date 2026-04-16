@@ -85,10 +85,11 @@ where
             &revm::context::result::ExecutionResult<<<Self::Executor as alloy_evm::block::BlockExecutor>::Evm as alloy_evm::Evm>::HaltReason>,
         ) -> alloy_evm::block::CommitChanges,
     ) -> Result<Option<u64>, BlockExecutionError> {
+        let (tx_env, tx) = tx.into_parts();
         if let Some(gas_used) =
-            self.executor.execute_transaction_with_commit_condition(tx.as_executable(), f)?
+            self.executor.execute_transaction_with_commit_condition((tx_env, &tx), f)?
         {
-            self.transactions.push(tx.into_recovered());
+            self.transactions.push(tx);
             Ok(Some(gas_used))
         } else {
             Ok(None)
@@ -99,6 +100,7 @@ where
     fn finish(
         mut self,
         state: impl StateProvider,
+        state_root_precomputed: Option<(alloy_primitives::B256, reth_trie_common::updates::TrieUpdates)>,
     ) -> Result<BlockBuilderOutcome<BscPrimitives>, BlockExecutionError> {
         let finish_start = std::time::Instant::now();
         let (evm, result) = self.executor.finish()?;
@@ -108,12 +110,15 @@ where
         // merge all transitions into bundle state
         db.merge_transitions(BundleRetention::Reverts);
 
-        // calculate the state root
+        // calculate the state root (or use precomputed when provided by sparse-trie pipeline).
         let state_root_start = std::time::Instant::now();
         let hashed_state = state.hashed_post_state(&db.bundle_state);
-        let (state_root, trie_updates) = state
-            .state_root_with_updates(hashed_state.clone())
-            .map_err(BlockExecutionError::other)?;
+        let (state_root, trie_updates) = match state_root_precomputed {
+            Some(precomputed) => precomputed,
+            None => state
+                .state_root_with_updates(hashed_state.clone())
+                .map_err(BlockExecutionError::other)?,
+        };
         let state_root_duration = state_root_start.elapsed();
 
         let user_tx_len = self.transactions.len();

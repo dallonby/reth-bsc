@@ -18,22 +18,24 @@ use alloy_consensus::{Header, TxReceipt};
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Bytes, B256};
 use alloy_rpc_types::engine::{ForkchoiceState, PayloadStatusEnum};
-use reth::{
-    api::FullNodeTypes,
-    beacon_consensus::EthBeaconConsensus,
-    builder::{components::ConsensusBuilder, BuilderContext},
-    consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom},
-    consensus_common::validation::{
-        validate_against_parent_4844, validate_against_parent_hash_number,
+use reth_ethereum::{
+    consensus::{
+        validation::{validate_against_parent_4844, validate_against_parent_hash_number},
+        Consensus, ConsensusError, EthBeaconConsensus, FullConsensus, HeaderValidator,
+        ReceiptRootBloom,
     },
-    primitives::{RecoveredBlock, SealedBlock, SealedHeader},
-    providers::BlockExecutionResult,
+    node::{
+        api::FullNodeTypes,
+        builder::{components::ConsensusBuilder, BuilderContext},
+    },
+    provider::BlockExecutionResult,
 };
+use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use reth_chainspec::EthChainSpec;
 use reth_engine_primitives::ConsensusEngineHandle;
 use reth_ethereum_primitives::Receipt;
 use reth_payload_primitives::EngineApiMessageVersion;
-use reth_primitives::{gas_spent_by_transactions, GotExpected};
+use reth_primitives_traits::{receipt::gas_spent_by_transactions, GotExpected};
 use reth_primitives_traits::constants::{GAS_LIMIT_BOUND_DIVISOR, MINIMUM_GAS_LIMIT};
 use reth_provider::{BlockNumReader, HeaderProvider};
 use std::sync::Arc;
@@ -62,6 +64,10 @@ where
 
         crate::shared::set_header_provider(Arc::new(ctx.provider().clone()))
             .unwrap_or_else(|e| panic!("Failed to set global header provider: {e}"));
+
+        // Seed the TD accumulator with genesis now that the canonical header
+        // lookup is wired up. No-op if genesis TD is already persisted.
+        crate::consensus::parlia::td_store::TdStore::seed_genesis();
 
         Ok(Arc::new(BscConsensus::new(ctx.chain_spec())))
     }
@@ -213,6 +219,16 @@ impl<ChainSpec: EthChainSpec + BscHardforks + 'static> HeaderValidator<Header>
                 }
             }
         }
+
+        // Header is valid against its parent — record td(child) = td(parent) +
+        // difficulty. Idempotent; no-op when td(parent) is unknown (e.g. side
+        // chain validated before its ancestors), and the same header being
+        // re-validated writes the same value.
+        crate::consensus::parlia::td_store::record_child(
+            header.hash(),
+            header.header(),
+            parent.hash(),
+        );
 
         Ok(())
     }
@@ -375,15 +391,15 @@ mod tests {
         fn sealed_header(
             &self,
             _number: u64,
-        ) -> reth_provider::ProviderResult<Option<reth_primitives::SealedHeader<Self::Header>>> {
+        ) -> reth_provider::ProviderResult<Option<reth_primitives_traits::SealedHeader<Self::Header>>> {
             Ok(None)
         }
 
         fn sealed_headers_while(
             &self,
             _range: impl core::ops::RangeBounds<u64>,
-            _predicate: impl FnMut(&reth_primitives::SealedHeader<Self::Header>) -> bool,
-        ) -> reth_provider::ProviderResult<Vec<reth_primitives::SealedHeader<Self::Header>>> {
+            _predicate: impl FnMut(&reth_primitives_traits::SealedHeader<Self::Header>) -> bool,
+        ) -> reth_provider::ProviderResult<Vec<reth_primitives_traits::SealedHeader<Self::Header>>> {
             Ok(Vec::new())
         }
     }
@@ -1035,7 +1051,7 @@ fn verify_receipts<R: reth_primitives_traits::Receipt>(
     expected_receipts_root: B256,
     expected_logs_bloom: alloy_primitives::Bloom,
     receipts: &[R],
-) -> Result<(), reth::consensus::ConsensusError> {
+) -> Result<(), reth_ethereum::consensus::ConsensusError> {
     // Calculate receipts root.
     let receipts_with_bloom = receipts.iter().map(TxReceipt::with_bloom_ref).collect::<Vec<_>>();
     let receipts_root = alloy_consensus::proofs::calculate_receipt_root(&receipts_with_bloom);
@@ -1063,15 +1079,15 @@ fn compare_receipts_root_and_logs_bloom(
     calculated_logs_bloom: alloy_primitives::Bloom,
     expected_receipts_root: B256,
     expected_logs_bloom: alloy_primitives::Bloom,
-) -> Result<(), reth::consensus::ConsensusError> {
+) -> Result<(), reth_ethereum::consensus::ConsensusError> {
     if calculated_receipts_root != expected_receipts_root {
-        return Err(reth::consensus::ConsensusError::BodyReceiptRootDiff(
+        return Err(reth_ethereum::consensus::ConsensusError::BodyReceiptRootDiff(
             GotExpected { got: calculated_receipts_root, expected: expected_receipts_root }.into(),
         ));
     }
 
     if calculated_logs_bloom != expected_logs_bloom {
-        return Err(reth::consensus::ConsensusError::BodyBloomLogDiff(
+        return Err(reth_ethereum::consensus::ConsensusError::BodyBloomLogDiff(
             GotExpected { got: calculated_logs_bloom, expected: expected_logs_bloom }.into(),
         ));
     }
@@ -1256,7 +1272,7 @@ where
 
         match self
             .engine_handle
-            .fork_choice_updated(state, None, EngineApiMessageVersion::default())
+            .fork_choice_updated(state, None)
             .await
         {
             Ok(response) => match response.payload_status.status {
@@ -1432,14 +1448,18 @@ where
     /// This private method queries the TD from the engine and caches it for future use.
     async fn header_td(
         &self,
-        engine: &ConsensusEngineHandle<BscPayloadTypes>,
-        number: u64,
+        _engine: &ConsensusEngineHandle<BscPayloadTypes>,
+        _number: u64,
         hash: B256,
     ) -> Result<Option<alloy_primitives::U256>, ParliaConsensusErr> {
         if let Some(td) = self.header_td_cache.write().get(&hash) {
             return Ok(*td);
         }
-        let td = engine.query_td(number, hash).await.map_err(ParliaConsensusErr::internal)?;
+        // reth 2.0 dropped ConsensusEngineHandle::query_td — we maintain the
+        // accumulator locally (see crate::consensus::parlia::td_store).
+        // Missing → None, which callers treat as "TD unknown, skip this
+        // comparison and fall through to hash-based canonical selection".
+        let td = crate::consensus::parlia::td_store::TdStore::get(&hash);
         self.header_td_cache.write().insert(hash, td);
         Ok(td)
     }

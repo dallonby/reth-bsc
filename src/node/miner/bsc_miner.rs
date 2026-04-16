@@ -26,14 +26,15 @@ use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, Sealable, U128};
 use k256::ecdsa::SigningKey;
 use lru::LruCache;
-use reth::transaction_pool::PoolTransaction;
-use reth::transaction_pool::TransactionPool;
+use reth_ethereum::pool::PoolTransaction;
+use reth_ethereum::pool::TransactionPool;
 use reth_basic_payload_builder::{PayloadConfig, PrecachedState};
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
 use reth_network::message::NewBlockMessage;
 use reth_payload_primitives::BuiltPayload;
-use reth_primitives::{SealedHeader, TransactionSigned};
+use reth_ethereum_primitives::{TransactionSigned};
+use reth_primitives_traits::{SealedHeader};
 use reth_primitives_traits::BlockBody;
 use reth_provider::{
     BlockNumReader, CanonStateNotification, CanonStateSubscriptions, HeaderProvider,
@@ -55,8 +56,8 @@ const RECENT_MINED_BLOCKS_CACHE_SIZE: usize = 100;
 
 #[derive(Clone, Debug)]
 pub struct MiningContext {
-    pub header: Option<reth_primitives::Header>, // tmp header for payload building.
-    pub parent_header: reth_primitives::SealedHeader,
+    pub header: Option<alloy_consensus::Header>, // tmp header for payload building.
+    pub parent_header: reth_primitives_traits::SealedHeader,
     pub parent_snapshot: Arc<crate::consensus::parlia::snapshot::Snapshot>,
     pub is_inturn: bool,
     pub cached_reads: Option<reth_revm::cached::CachedReads>,
@@ -245,8 +246,8 @@ where
     /// - `Err(error)` - Validation failed (engine not initialized or headers unavailable), error contains reason
     async fn validate_reorg<N>(
         &self,
-        old: &Arc<reth::providers::Chain<N>>,
-        new: &Arc<reth::providers::Chain<N>>,
+        old: &Arc<reth_ethereum::provider::Chain<N>>,
+        new: &Arc<reth_ethereum::provider::Chain<N>>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>
     where
         N: reth_primitives_traits::NodePrimitives,
@@ -311,7 +312,7 @@ where
         }
     }
 
-    fn get_tip_header_at_startup(&self) -> Option<reth_primitives::SealedHeader> {
+    fn get_tip_header_at_startup(&self) -> Option<reth_primitives_traits::SealedHeader> {
         let best_number = self.provider.best_block_number().ok()?;
         let tip_header = self.provider.sealed_header(best_number).ok()??;
         Some(tip_header)
@@ -324,7 +325,7 @@ where
     fn cache_for_next(
         &mut self,
         committed: &Arc<
-            reth::providers::Chain<<Provider as reth_provider::NodePrimitivesProvider>::Primitives>,
+            reth_ethereum::provider::Chain<<Provider as reth_provider::NodePrimitivesProvider>::Primitives>,
         >,
     ) {
         // Build pre-cache from execution outcome
@@ -624,9 +625,17 @@ where
             self.parlia.clone(),
             mining_ctx.clone(),
         );
+        // reth 2.0: PayloadConfig::new now takes (parent, attributes, payload_id).
+        // Use the id we already computed when building the attributes so engine
+        // API replays line up.
+        let payload_id = attributes.id;
         let build_args = BscBuildArguments {
             cached_reads: mining_ctx.cached_reads.clone().unwrap_or_default(),
-            config: PayloadConfig::new(Arc::new(mining_ctx.parent_header.clone()), attributes),
+            config: PayloadConfig::new(
+                Arc::new(mining_ctx.parent_header.clone()),
+                attributes,
+                payload_id,
+            ),
             cancel: ManualCancel::default(),
             trace_id: crate::node::miner::payload::generate_trace_id(),
             min_gas_tip: self.desired_min_gas_tip,
@@ -994,10 +1003,13 @@ where
 
         // TODO: wait more times when huge chain import.
         // Note: sidechain blocks are already filtered by parent canonical check above.
-        let parent_td = self
-            .provider
-            .header_td_by_number(parent_number)
-            .map_err(|e| format!("Failed to get parent total difficulty due to {}", e))?
+        // reth 2.0 removed HeaderProvider::header_td_by_number; we read from
+        // our local TD accumulator (crate::consensus::parlia::td_store). If
+        // the parent hasn't been validated yet (rare race during init), fall
+        // back to the current header's difficulty alone — peers use new_td
+        // for relay-priority heuristics so a slight underestimate on startup
+        // is acceptable.
+        let parent_td = crate::consensus::parlia::td_store::TdStore::best_by_number(parent_number)
             .unwrap_or_default();
         let current_difficulty = sealed_block.header().difficulty();
         let new_td = parent_td + current_difficulty;
@@ -1006,7 +1018,7 @@ where
         let new_block =
             BscNewBlock(reth_eth_wire::NewBlock { block: sealed_block.clone_block(), td });
         let msg =
-            NewBlockMessage { hash: block_hash, block: Arc::new(new_block), td: Some(new_td) };
+            NewBlockMessage { hash: block_hash, block: Arc::new(new_block) };
 
         if self.submit_built_payload {
             if let Some(sender) = get_block_import_mined_sender() {
@@ -1251,10 +1263,10 @@ where
     }
 
     fn spawn_workers(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.task_executor.spawn_critical("mev_work_worker", self.mev_work_worker.run());
-        self.task_executor.spawn_critical("new_work_worker", self.new_work_worker.run());
-        self.task_executor.spawn_critical("main_work_worker", self.main_work_worker.run());
-        self.task_executor.spawn_critical("result_work_worker", self.result_work_worker.run());
+        self.task_executor.spawn_critical_task("mev_work_worker", self.mev_work_worker.run());
+        self.task_executor.spawn_critical_task("new_work_worker", self.new_work_worker.run());
+        self.task_executor.spawn_critical_task("main_work_worker", self.main_work_worker.run());
+        self.task_executor.spawn_critical_task("result_work_worker", self.result_work_worker.run());
         info!("Succeed to start mining, address: {}", self.validator_address);
         Ok(())
     }

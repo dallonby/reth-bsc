@@ -11,25 +11,26 @@ use consensus::BscConsensusBuilder;
 use engine::BscPayloadServiceBuilder;
 use evm::BscExecutorBuilder;
 use network::BscNetworkBuilder;
-use reth::{
-    api::{FullNodeComponents, FullNodeTypes, HeaderTy, NodeTypes, PrimitivesTy},
-    builder::rpc::EthApiCtx,
-    builder::{
-        components::ComponentsBuilder,
-        rpc::{EthApiBuilder, RpcAddOns, RpcContext},
-        DebugNode, Node, NodeAdapter,
+use reth_ethereum::{
+    node::{
+        api::{FullNodeComponents, FullNodeTypes, HeaderTy, NodeTypes, PrimitivesTy},
+        builder::{
+            components::ComponentsBuilder,
+            rpc::{EngineApiBuilder, EthApiBuilder, EthApiCtx, RpcAddOns, RpcContext},
+            DebugNode, Node, NodeAdapter,
+        },
     },
     rpc::eth::core::{EthApiFor, EthRpcConverterFor},
 };
 use reth_chainspec::{EthereumHardforks, Hardforks};
 use reth_evm::ConfigureEvm;
-use reth::rpc::server_types::eth::EthApiError;
+use reth_ethereum::rpc::eth::EthApiError;
 use reth_rpc_eth_api::{helpers::pending_block::BuildPendingEnv, RpcConvert, FromEvmError};
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_engine_primitives::ConsensusEngineHandle;
 
 use reth_payload_primitives::{PayloadAttributesBuilder, PayloadTypes};
-use reth_primitives::BlockBody;
+use reth_ethereum_primitives::BlockBody;
 use reth_rpc_eth_api::helpers::config::{EthConfigApiServer, EthConfigHandler};
 use reth_rpc_server_types::RethRpcModule;
 use std::sync::Arc;
@@ -76,27 +77,16 @@ where
     type EthApi = EthApiFor<N>;
 
     async fn build_eth_api(self, ctx: EthApiCtx<'_, N>) -> eyre::Result<Self::EthApi> {
+        // reth 2.0 dropped EthApiBuilder::with_current_validators_len (a
+        // bnb-chain fork addition that fed the live Parlia validator count
+        // into eth_chainId/network responses for BSC). Until upstream grows
+        // an equivalent extension point — or we wrap the EthApi with a
+        // BSC-specific decorator — those RPC paths fall back to upstream
+        // defaults. Snapshot lookup helpers are still in place via
+        // crate::shared::get_snapshot_provider, so wiring this back in is
+        // a small change once an extension hook lands.
         let eth_api = ctx
             .eth_api_builder()
-            .with_current_validators_len(move || {
-                let count = (|| {
-                    let best_block = crate::shared::get_best_canonical_block_number()?;
-                    let header = crate::shared::get_canonical_header_by_number(best_block)?;
-                    let snapshot_provider = crate::shared::get_snapshot_provider()?;
-                    Some(
-                        snapshot_provider
-                            .snapshot_by_hash(&header.hash_slow())?
-                            .validators
-                            .len(),
-                    )
-                })();
-
-                if count.is_none() {
-                    trace!(target: "rpc::eth", "validator count unavailable for finalized-header callbacks");
-                }
-
-                count
-            })
             .map_converter(|r| r.with_network())
             .build();
 

@@ -540,19 +540,8 @@ mod tests {
             }
         }
 
-        fn header_td(
-            &self,
-            _hash: &alloy_primitives::BlockHash,
-        ) -> ProviderResult<Option<alloy_primitives::U256>> {
-            Ok(None)
-        }
-
-        fn header_td_by_number(
-            &self,
-            _number: alloy_primitives::BlockNumber,
-        ) -> ProviderResult<Option<alloy_primitives::U256>> {
-            Ok(None)
-        }
+        // reth 2.0 dropped HeaderProvider::header_td / header_td_by_number
+        // (total-difficulty removed post-merge). Stub no longer required.
 
         fn headers_range(
             &self,

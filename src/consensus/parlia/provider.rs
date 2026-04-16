@@ -21,7 +21,6 @@ pub struct ValidatorsInfo {
 
 use reth_db::{Database, DatabaseError};
 use reth_db::table::{Compress, Decompress};
-use reth_db::models::ParliaSnapshotBlob;
 use reth_db::transaction::{DbTx, DbTxMut};
 use schnellru::{ByLength, LruMap};
 
@@ -96,19 +95,22 @@ impl<DB: Database + Clone> Clone for EnhancedDbSnapshotProvider<DB> {
 impl<DB: Database> DbSnapshotProvider<DB> {
     fn query_db_by_hash(&self, block_hash: &BlockHash) -> Option<Snapshot> {
         let tx = self.db.tx().ok()?;
-        if let Ok(Some(raw_blob)) = tx.get::<crate::consensus::parlia::db::ParliaSnapshotsByHash>(*block_hash) {
-            let raw = &raw_blob.0;
-            if let Ok(decoded) = Snapshot::decompress(raw) {
-                tracing::debug!("Succeed to query snapshot from db, block_number: {}, block_hash: {}", decoded.block_number, decoded.block_hash);
-                return Some(decoded);
-            }
+        // The `ParliaSnapshotsByHash` table now stores `Snapshot` directly, so the
+        // get/put methods do the (de)compression round-trip for us.
+        if let Ok(Some(snapshot)) = tx.get::<crate::consensus::parlia::db::ParliaSnapshotsByHash>(*block_hash) {
+            tracing::debug!(
+                "Succeed to query snapshot from db, block_number: {}, block_hash: {}",
+                snapshot.block_number,
+                snapshot.block_hash
+            );
+            return Some(snapshot);
         }
         None
     }
 
     fn persist_to_db(&self, snap: &Snapshot) -> Result<(), DatabaseError> {
         let tx = self.db.tx_mut()?;
-        tx.put::<crate::consensus::parlia::db::ParliaSnapshotsByHash>(snap.block_hash, ParliaSnapshotBlob(snap.clone().compress()))?;
+        tx.put::<crate::consensus::parlia::db::ParliaSnapshotsByHash>(snap.block_hash, snap.clone())?;
         tx.commit()?;
         tracing::debug!("Succeed to insert snapshot to db, block_number: {}, block_hash: {}", snap.block_number, snap.block_hash);
         Ok(())

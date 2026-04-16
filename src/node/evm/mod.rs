@@ -12,7 +12,7 @@ use crate::{
 };
 use alloy_primitives::{Address, Bytes};
 
-use reth::{
+use reth_ethereum::node::{
     api::{FullNodeTypes, NodeTypes},
     builder::{components::ExecutorBuilder, BuilderContext},
 };
@@ -25,7 +25,8 @@ use revm::{
     context_interface::JournalTr,
     Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
 };
-use revm_context_interface::journaled_state::account::JournaledAccountTr;
+// Same v16/v17 split as src/evm/handler.rs — go through `revm::context_interface`.
+use revm::context_interface::journaled_state::account::JournaledAccountTr;
 
 mod assembler;
 mod builder;

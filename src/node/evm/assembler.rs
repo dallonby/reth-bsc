@@ -248,10 +248,11 @@ where
         let logs_bloom = logs_bloom(receipts.iter().flat_map(|r| &r.logs));
         let block_number = evm_env.block_env.number().saturating_to();
 
-        let withdrawals = self
-            .chain_spec
-            .is_shanghai_active_at_timestamp(timestamp)
-            .then(|| eth_ctx.withdrawals.clone().map(|w| w.into_owned()).unwrap_or_default());
+        let withdrawals = self.chain_spec.is_shanghai_active_at_timestamp(timestamp).then(|| {
+            alloy_eips::eip4895::Withdrawals::new(
+                eth_ctx.withdrawals.clone().map(|w| w.into_owned()).unwrap_or_default(),
+            )
+        });
 
         let withdrawals_root =
             withdrawals.as_deref().map(|w| proofs::calculate_withdrawals_root(w));

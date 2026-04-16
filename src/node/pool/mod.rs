@@ -5,9 +5,9 @@ use std::sync::{
 
 use alloy_consensus::{BlockHeader, Transaction};
 use alloy_eips::merge::EPOCH_SLOTS;
-use reth::api::FullNodeTypes;
-use reth::api::{NodePrimitives, NodeTypes};
-use reth::builder::{
+use reth_ethereum::node::api::FullNodeTypes;
+use reth_ethereum::node::api::{NodePrimitives, NodeTypes};
+use reth_ethereum::node::builder::{
     components::{create_blob_store_with_cache, PoolBuilder, TxPoolBuilder},
     BuilderContext,
 };
@@ -70,6 +70,7 @@ where
     V: TransactionValidator + Send + Sync + 'static,
 {
     type Transaction = <V as TransactionValidator>::Transaction;
+    type Block = <V as TransactionValidator>::Block;
 
     async fn validate_transaction(
         &self,
@@ -100,7 +101,10 @@ where
 
     async fn validate_transactions(
         &self,
-        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+        transactions: impl IntoIterator<
+            Item = (TransactionOrigin, Self::Transaction),
+            IntoIter: Send,
+        > + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
         let outcomes = self.inner.validate_transactions(transactions).await;
         let mut mapped: Vec<TransactionValidationOutcome<Self::Transaction>> =
@@ -142,10 +146,10 @@ where
         mapped
     }
 
-    fn on_new_head_block<B>(&self, new_tip_block: &reth_primitives_traits::SealedBlock<B>)
-    where
-        B: reth_primitives_traits::Block,
-    {
+    fn on_new_head_block(
+        &self,
+        new_tip_block: &reth_primitives_traits::SealedBlock<Self::Block>,
+    ) {
         if let Some(osaka_ts) = self.osaka_timestamp {
             self.osaka_activated.store(
                 new_tip_block.header().timestamp() >= osaka_ts,
@@ -161,7 +165,7 @@ where
 #[non_exhaustive]
 pub struct BscPoolBuilder;
 
-impl<Types, Node> PoolBuilder<Node> for BscPoolBuilder
+impl<Types, Node, Evm> PoolBuilder<Node, Evm> for BscPoolBuilder
 where
     Node: FullNodeTypes<Types = Types>,
     Types: NodeTypes<
@@ -172,16 +176,32 @@ where
     <Types as NodeTypes>::Payload: PayloadTypes,
     EthPooledTransaction<EthTxSigned>: reth_transaction_pool::EthPoolTransaction,
     EthPooledTransaction<EthTxSigned>: PoolTransaction,
+    // reth 2.0: EthTransactionValidator reads fork rules off the Evm config,
+    // so the Evm generic must implement ConfigureEvm. The validator also needs
+    // Evm::Primitives to match the node's primitives, otherwise the generic
+    // glue in TransactionValidationTaskExecutor can't line up block/header types.
+    Evm: reth_evm::ConfigureEvm<Primitives = <Types as NodeTypes>::Primitives>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
+    // reth 2.0 added an `Evm` generic to EthTransactionValidator so the validator
+    // can read the active fork rules from the EVM config rather than via the
+    // removed `with_head_timestamp` setter. Forward the same Evm we receive.
     type Pool = Pool<
         TransactionValidationTaskExecutor<
-            BscTxValidator<EthTransactionValidator<Node::Provider, EthPooledTransaction>>,
+            BscTxValidator<EthTransactionValidator<Node::Provider, EthPooledTransaction, Evm>>,
         >,
         CoinbaseTipOrdering<EthPooledTransaction>,
         DiskFileBlobStore,
     >;
 
-    async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
+    async fn build_pool(
+        self,
+        ctx: &BuilderContext<Node>,
+        evm_config: Evm,
+    ) -> eyre::Result<Self::Pool> {
         let pool_config = ctx.pool_config();
 
         // Same as upstream: derive blob cache size based on time
@@ -201,12 +221,20 @@ where
         };
 
         let blob_store = create_blob_store_with_cache(ctx, blob_cache_size)?;
+        // Stash a clone of the blob store so the MEV bid simulator can insert
+        // sidecars directly (reth 2.0 removed `Pool::insert_blob` from the
+        // `TransactionPool` trait; see crate::shared::set_blob_store).
+        let _ = crate::shared::set_blob_store(blob_store.clone());
 
         // Build default Ethereum validator executor
         // BSC rejected EIP-7594 (PeerDAS), so we disable EIP-7594 sidecar support to always
         // use v0 (legacy) blob sidecars and reject v1 (EIP-7594) sidecars.
-        let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
-            .with_head_timestamp(ctx.head().timestamp)
+        // reth 2.0: eth_builder takes (client, evm_config); with_head_timestamp
+        // is gone — the validator now reads the active fork rules from evm_config.
+        let validator = TransactionValidationTaskExecutor::eth_builder(
+            ctx.provider().clone(),
+            evm_config,
+        )
             .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
             .kzg_settings(ctx.kzg_settings()?)
             .with_local_transactions_config(pool_config.local_transactions_config.clone())

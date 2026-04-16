@@ -12,11 +12,11 @@ use crate::node::primitives::BscBlobTransactionSidecar;
 use alloy_consensus::{BlockHeader, Transaction};
 use alloy_evm::Evm;
 use alloy_primitives::U256;
-use reth::payload::EthPayloadBuilderAttributes;
-use reth::transaction_pool::error::Eip4844PoolTransactionError;
-use reth::transaction_pool::error::InvalidPoolTransactionError;
-use reth::transaction_pool::BestTransactionsAttributes;
-use reth::transaction_pool::{PoolTransaction, TransactionPool};
+use crate::node::miner::attributes::BscPayloadBuilderAttributes;
+use reth_ethereum::pool::error::Eip4844PoolTransactionError;
+use reth_ethereum::pool::error::InvalidPoolTransactionError;
+use reth_ethereum::pool::BestTransactionsAttributes;
+use reth_ethereum::pool::{PoolTransaction, TransactionPool};
 use reth_basic_payload_builder::PayloadConfig;
 use reth_chainspec::EthChainSpec;
 use reth_ethereum_payload_builder::EthereumBuilderConfig;
@@ -25,11 +25,10 @@ use reth_evm::execute::BlockBuilder;
 use reth_evm::execute::BlockBuilderOutcome;
 use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
 use reth_execution_types::BlockExecutionOutput;
-use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock, PayloadBuilderError};
-use reth_primitives::HeaderTy;
-use reth_primitives::InvalidTransactionError;
-use reth_primitives::TransactionSigned;
+use reth_primitives_traits::HeaderTy;
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
+use reth_ethereum_primitives::TransactionSigned;
 use reth_primitives_traits::{BlockBody, SignerRecoverable};
 use reth_provider::StateProviderFactory;
 use reth_revm::cached::CachedReads;
@@ -174,11 +173,11 @@ where
     /// Returns a `Result` containing the built payload or an error.
     pub async fn build_payload(
         &self,
-        args: BscBuildArguments<EthPayloadBuilderAttributes>,
+        args: BscBuildArguments<BscPayloadBuilderAttributes>,
     ) -> Result<BscBuiltPayload, Box<dyn std::error::Error + Send + Sync>> {
         let build_start = std::time::Instant::now();
         let BscBuildArguments { mut cached_reads, config, cancel, trace_id, min_gas_tip } = args;
-        let PayloadConfig { parent_header, attributes } = config;
+        let PayloadConfig { parent_header, attributes, payload_id: _ } = config;
 
         let state_provider = self.client.state_by_block_hash(parent_header.hash_slow())?;
         let state = StateProviderDatabase::new(&state_provider);
@@ -521,7 +520,7 @@ where
         // add system txs to payload.
         let finalize_start = std::time::Instant::now();
         let BlockBuilderOutcome { execution_result, hashed_state, trie_updates, block } =
-            builder.finish(&state_provider)?;
+            builder.finish(&state_provider, None)?;
         let mut sealed_block = Arc::new(block.sealed_block().clone());
 
         // Update miner metrics
@@ -610,12 +609,12 @@ where
     /// Only contains system transactions (if any)
     pub async fn build_empty_payload(
         &self,
-        args: BscBuildArguments<EthPayloadBuilderAttributes>,
+        args: BscBuildArguments<BscPayloadBuilderAttributes>,
     ) -> Result<BscBuiltPayload, Box<dyn std::error::Error + Send + Sync>> {
         let build_start = std::time::Instant::now();
         let BscBuildArguments { mut cached_reads, config, cancel: _, trace_id, min_gas_tip: _ } =
             args;
-        let PayloadConfig { parent_header, attributes } = config;
+        let PayloadConfig { parent_header, attributes, payload_id: _ } = config;
 
         let state_provider = self.client.state_by_block_hash(parent_header.hash_slow())?;
         let state = StateProviderDatabase::new(&state_provider);
@@ -658,7 +657,7 @@ where
         // Add system txs to payload and finalize
         let finalize_start = std::time::Instant::now();
         let BlockBuilderOutcome { execution_result, hashed_state, trie_updates, block } =
-            builder.finish(&state_provider)?;
+            builder.finish(&state_provider, None)?;
         let sealed_block = Arc::new(block.sealed_block().clone());
 
         // Update miner metrics
@@ -743,7 +742,7 @@ where
     /// Potential payloads vector for selecting the best one
     potential_payloads: Vec<BscBuiltPayload>,
     /// Current build arguments
-    build_args: BscBuildArguments<EthPayloadBuilderAttributes>,
+    build_args: BscBuildArguments<BscPayloadBuilderAttributes>,
     /// Retry count for payload building
     retries: u32,
     /// JoinSet for managing build tasks
@@ -778,7 +777,7 @@ where
         parlia: Arc<crate::consensus::parlia::Parlia<crate::chainspec::BscChainSpec>>,
         mining_ctx: MiningContext,
         builder: BscPayloadBuilder<Pool, Client, EvmConfig>,
-        build_args: BscBuildArguments<EthPayloadBuilderAttributes>,
+        build_args: BscBuildArguments<BscPayloadBuilderAttributes>,
         simulator: Arc<BidSimulator<Client, Pool>>, // No outer RwLock needed
         result_tx: mpsc::UnboundedSender<SubmitContext>,
     ) -> (Self, BscPayloadJobHandle) {
@@ -1333,7 +1332,7 @@ mod tests {
     use alloy_eips::eip7594::{
         BlobTransactionSidecarEip7594, BlobTransactionSidecarVariant, CELLS_PER_EXT_BLOB,
     };
-    use reth::transaction_pool::error::Eip4844PoolTransactionError;
+    use reth_ethereum::pool::error::Eip4844PoolTransactionError;
 
     #[test]
     fn bsc_sidecar_accepts_eip4844() {

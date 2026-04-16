@@ -26,7 +26,8 @@ use reth_evm::{
     FromRecoveredTx, FromTxWithEncoded, InspectorFor, IntoTxEnv, NextBlockEnvAttributes,
 };
 use reth_evm_ethereum::RethReceiptBuilder;
-use reth_primitives::{BlockTy, HeaderTy, SealedBlock, SealedHeader, TransactionSigned};
+use reth_ethereum_primitives::{TransactionSigned};
+use reth_primitives_traits::{BlockTy, HeaderTy, SealedBlock, SealedHeader};
 use reth_primitives_traits::constants::MAX_TX_GAS_LIMIT_OSAKA;
 use reth_revm::State;
 use revm::{
@@ -179,15 +180,22 @@ where
         &self.evm_factory
     }
 
+    // reth 2.0 reshaped BlockExecutorFactory::create_executor: the DB generic
+    // is now the EVM's DB directly (any StateDB = Database + DatabaseCommit),
+    // not an inner DB that the factory wraps in `State<...>`. BscBlockExecutor's
+    // StateDB-only bound (see executor.rs) means we pass DB through unchanged
+    // and rely on DatabaseCommit::commit_iter + DatabaseCommitExt::{drain,
+    // increment}_balances for the system-contract patches we used to do via
+    // load_cache_account / apply_transition.
     #[allow(refining_impl_trait)]
     fn create_executor<'a, DB, I>(
         &'a self,
-        evm: <Self::EvmFactory as EvmFactory>::Evm<&'a mut State<DB>, I>,
+        evm: <Self::EvmFactory as EvmFactory>::Evm<DB, I>,
         ctx: Self::ExecutionCtx<'a>,
-    ) -> BscBlockExecutor<'a, <Self::EvmFactory as EvmFactory>::Evm<&'a mut State<DB>, I>, Spec, R>
+    ) -> BscBlockExecutor<'a, <Self::EvmFactory as EvmFactory>::Evm<DB, I>, Spec, R>
     where
-        DB: alloy_evm::Database + 'a,
-        I: Inspector<<Self::EvmFactory as EvmFactory>::Context<&'a mut State<DB>>> + 'a,
+        DB: alloy_evm::block::StateDB + 'a,
+        I: Inspector<<Self::EvmFactory as EvmFactory>::Context<DB>> + 'a,
     {
         BscBlockExecutor::new(
             evm,
@@ -267,6 +275,8 @@ where
             gas_limit: header.gas_limit(),
             basefee: header.base_fee_per_gas().unwrap_or_default(),
             blob_excess_gas_and_price,
+            // BSC doesn't model beacon-chain slots; leave zero.
+            slot_num: 0,
         };
 
         Ok(EvmEnv { cfg_env, block_env })
@@ -346,6 +356,8 @@ where
             basefee: basefee.unwrap_or_default(),
             // calculate excess gas based on parent block's blob gas usage
             blob_excess_gas_and_price,
+            // BSC doesn't model beacon-chain slots; leave zero.
+            slot_num: 0,
         };
 
         Ok(EvmEnv { cfg_env, block_env })
@@ -361,7 +373,7 @@ where
                 parent_hash: block.header().parent_hash,
                 parent_beacon_block_root: block.header().parent_beacon_block_root,
                 ommers: &block.body().ommers,
-                withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                withdrawals: block.body().withdrawals.as_ref().map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.header().extra_data.clone(),
             },
             header: Some(block.header().clone()),
@@ -381,7 +393,7 @@ where
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
-                withdrawals: attributes.withdrawals.map(Cow::Owned),
+                withdrawals: attributes.withdrawals.map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.extra_data,
             },
             header: None, // No header available for next block context
@@ -390,6 +402,10 @@ where
     }
 
     // payload builder use this method to create BscBlockBuilder.
+    // reth 2.0: create_block_builder still wraps DB in `&'a mut State<DB>`
+    // (State<DB> is a concrete StateDB so it satisfies the BlockExecutorFor
+    // bound). The associated `Executor: BlockExecutorFor<..., &'a mut State<DB>, I>`
+    // is what the returned BlockBuilder must prove.
     fn create_block_builder<'a, DB, I>(
         &'a self,
         evm: EvmFor<Self, &'a mut State<DB>, I>,
@@ -397,7 +413,7 @@ where
         ctx: <Self::BlockExecutorFactory as BlockExecutorFactory>::ExecutionCtx<'a>,
     ) -> impl BlockBuilder<
         Primitives = Self::Primitives,
-        Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, DB, I>,
+        Executor: BlockExecutorFor<'a, Self::BlockExecutorFactory, &'a mut State<DB>, I>,
     >
     where
         DB: Database,
@@ -443,7 +459,7 @@ where
                 parent_hash: block.header.parent_hash(),
                 parent_beacon_block_root: block.header.parent_beacon_block_root,
                 ommers: &block.body.inner.ommers,
-                withdrawals: block.body.inner.withdrawals.as_ref().map(Cow::Borrowed),
+                withdrawals: block.body.inner.withdrawals.as_ref().map(|w| Cow::Borrowed(w.as_slice())),
                 extra_data: block.header.extra_data.clone(),
             },
             header: Some(block.header.clone()),
