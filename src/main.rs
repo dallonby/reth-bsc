@@ -418,6 +418,11 @@ fn main() -> eyre::Result<()> {
             // Set the IPC client
             reth_bsc::shared::set_ipc_client(ipc_path).await.unwrap();
 
+            // Subscribe to peer-lifecycle events and emit an aggregated INFO
+            // summary per minute. Built to diagnose the "peers drop to zero
+            // after sync" drain (reth-bsc #320) without spamming logs.
+            reth_bsc::node::network::peer_metrics::spawn(&node.network);
+
             // reth 2.0 removed NetworkConfigBuilder::proxied_peers, so BSC's
             // proxied peers don't get auto-added by the upstream peer manager.
             // Mark them as trusted after launch so the peer manager won't drop
