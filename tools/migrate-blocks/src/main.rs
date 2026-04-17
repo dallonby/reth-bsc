@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 mod bodies;
+mod header_numbers;
 mod pipeline;
 mod reader;
 mod static_copy;

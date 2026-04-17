@@ -49,6 +49,7 @@ fn run_bodies(ctx: Context) -> eyre::Result<()> {
         decode_samples: 2_000,
         root_samples: 200,
         phase: ctx.phase,
+        to_block: ctx.to_block,
     };
     crate::bodies::run(&ctx.from, &ctx.to, cfg, ctx.dry_run)
 }
@@ -59,13 +60,37 @@ fn run_bodies(ctx: Context) -> eyre::Result<()> {
 fn run_static_copy(ctx: Context) -> eyre::Result<()> {
     tracing::info!(phase = ?ctx.phase, "static-copy phase");
 
-    let segments = static_copy::discover_source_segments(&ctx.from, ctx.phase)?;
+    let mut segments = static_copy::discover_source_segments(&ctx.from, ctx.phase)?;
     if segments.is_empty() {
         eyre::bail!(
             "no static-file segments found under {} for phase {:?}",
             ctx.from.display(),
             ctx.phase,
         );
+    }
+
+    // Honor --to-block by dropping any segment whose end block exceeds it.
+    // NippyJar segments aren't truncatable in-place, so the smallest unit we
+    // can copy is one whole segment (typically 500k blocks). Anything past
+    // --to-block is dropped wholesale.
+    if let Some(cap) = ctx.to_block {
+        let before = segments.len();
+        segments.retain(|s| s.end <= cap);
+        let after = segments.len();
+        if before != after {
+            tracing::info!(
+                cap_block = cap,
+                segments_kept = after,
+                segments_dropped = before - after,
+                "to_block filter applied to segments",
+            );
+        }
+        if segments.is_empty() {
+            eyre::bail!(
+                "no segments fit under --to-block {cap}; smallest segment is 500k blocks. \
+                 Use --to-block 499999 to copy just the first segment.",
+            );
+        }
     }
 
     // Group summary — headers_tip here is whatever the highest segment
@@ -115,6 +140,17 @@ fn run_static_copy(ctx: Context) -> eyre::Result<()> {
     let mut dst = open_dest_db(&ctx.to)?;
     reth_bsc::consensus::parlia::db::ensure_parlia_tables(&mut dst)
         .map_err(|e| eyre::eyre!("ensure_parlia_tables: {e}"))?;
+    drop(dst);
+
+    // Backfill the MDBX `HeaderNumbers` (hash → number) reverse index.
+    // Without this, `provider.header(hash)` returns None for every block —
+    // including genesis — and BSC's pre-execution parent lookup in
+    // src/node/evm/pre_execution.rs:71 returns BlockExecutionError, which
+    // the pipeline interprets as bad_block=Some(1) and unwinds every stage
+    // to 0. See header_numbers.rs for the full story.
+    crate::header_numbers::backfill(&ctx.to, 0, tip_block)?;
+
+    let dst = open_dest_db(&ctx.to)?;
     commit_checkpoints(&dst, tip_block, /* tip_tx unused in static phases */ 0, ctx.phase)?;
     tracing::info!(
         tip_block,

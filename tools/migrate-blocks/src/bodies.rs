@@ -49,7 +49,7 @@ use alloy_consensus::{proofs::calculate_transaction_root, BlockHeader};
 use alloy_primitives::{BlockNumber, TxNumber, B256};
 use reth_bsc::BscPrimitives;
 use reth_db::{
-    cursor::DbCursorRO,
+    cursor::{DbCursorRO, DbCursorRW},
     mdbx::{DatabaseArguments, DatabaseEnv, DatabaseEnvKind},
     tables,
     transaction::{DbTx, DbTxMut},
@@ -72,11 +72,19 @@ pub(crate) struct BodiesConfig {
     pub root_samples: usize,
     /// Phase (passed through so we stamp the right checkpoints at the end).
     pub phase: Phase,
+    /// Optional cap on the highest block to migrate. NippyJar segments aren't
+    /// truncatable, so segments whose `end > to_block` are dropped wholesale.
+    pub to_block: Option<BlockNumber>,
 }
 
 impl Default for BodiesConfig {
     fn default() -> Self {
-        Self { decode_samples: 2_000, root_samples: 200, phase: Phase::StaticBodies }
+        Self {
+            decode_samples: 2_000,
+            root_samples: 200,
+            phase: Phase::StaticBodies,
+            to_block: None,
+        }
     }
 }
 
@@ -119,15 +127,19 @@ pub(crate) fn run(
 
     // 1. Copy transactions static-file segments. (Headers assumed already
     //    migrated by a prior `static-headers` run; we don't re-copy them.)
-    copy_transactions_segments(from_datadir, to_datadir)?;
+    copy_transactions_segments(from_datadir, to_datadir, cfg.to_block)?;
 
     // 2. Copy the MDBX companion index tables verbatim. Encoding of these
     //    (u64/B256 keys, simple Compact-encoded values made of u64 / Vec<
     //    Header or Withdrawal>) is stable between v1 and v2.
-    copy_mdbx_body_tables(from_datadir, to_datadir)?;
+    copy_mdbx_body_tables(from_datadir, to_datadir, cfg.to_block)?;
 
-    // 3. Stamp StageCheckpoints.
-    let tip_block = report.source_block_range.1;
+    // 3. Stamp StageCheckpoints. If --to-block was set, cap the tip we stamp
+    //    so the bodies checkpoint matches the data we actually copied.
+    let tip_block = match cfg.to_block {
+        Some(cap) => report.source_block_range.1.min(cap),
+        None => report.source_block_range.1,
+    };
     stamp_checkpoints(to_datadir, tip_block, cfg.phase)?;
 
     // 4. Post-copy: re-run the probe against the DESTINATION. If this fails,
@@ -307,16 +319,24 @@ fn print_report(r: &PreflightReport) {
 }
 
 /// Copy the transactions static-file segments from source to dest. Uses the
-/// same triplet-copy path as headers, filtered to kind = "transactions".
-fn copy_transactions_segments(from_datadir: &Path, to_datadir: &Path) -> eyre::Result<()> {
+/// same triplet-copy path as headers, filtered to kind = "transactions" and
+/// (optionally) capped at `to_block`.
+fn copy_transactions_segments(
+    from_datadir: &Path,
+    to_datadir: &Path,
+    to_block: Option<BlockNumber>,
+) -> eyre::Result<()> {
     let t0 = Instant::now();
     let segments =
         crate::static_copy::discover_source_segments(from_datadir, Phase::StaticBodies)?;
-    let tx_segments: Vec<_> =
+    let mut tx_segments: Vec<_> =
         segments.into_iter().filter(|s| s.kind == "transactions").collect();
+    if let Some(cap) = to_block {
+        tx_segments.retain(|s| s.end <= cap);
+    }
     eyre::ensure!(
         !tx_segments.is_empty(),
-        "no transactions segments found under {}",
+        "no transactions segments found under {} (post --to-block filter)",
         from_datadir.display(),
     );
     let report = crate::static_copy::copy_segments(to_datadir, &tx_segments)?;
@@ -331,8 +351,13 @@ fn copy_transactions_segments(from_datadir: &Path, to_datadir: &Path) -> eyre::R
 
 /// MDBX-copy the bodies-related index tables from source to dest. Each table
 /// is walked with a cursor on the source and written via `tx.put` on the
-/// dest. Commits batch every N rows to bound memory.
-fn copy_mdbx_body_tables(from_datadir: &Path, to_datadir: &Path) -> eyre::Result<()> {
+/// dest. Commits batch every N rows to bound memory. Optional `to_block` cap
+/// stops the walk when keys (or values, for `TransactionBlocks`) exceed it.
+fn copy_mdbx_body_tables(
+    from_datadir: &Path,
+    to_datadir: &Path,
+    to_block: Option<BlockNumber>,
+) -> eyre::Result<()> {
     let src_db = DatabaseEnv::open(
         &resolve_db_dir(from_datadir),
         DatabaseEnvKind::RO,
@@ -344,51 +369,115 @@ fn copy_mdbx_body_tables(from_datadir: &Path, to_datadir: &Path) -> eyre::Result
     )
     .map_err(|e| eyre::eyre!("init dest db: {e}"))?;
 
-    // Macro-like closure to copy one table with default codec. Not generic
-    // over table because the DbCursorRO/put impls are separate per-table;
-    // we just paste the same shape below for each one.
-    copy_table::<tables::BlockBodyIndices>(&src_db, &dst_db, "BlockBodyIndices")?;
-    copy_table::<tables::TransactionBlocks>(&src_db, &dst_db, "TransactionBlocks")?;
+    // Block-keyed tables: stop once the key exceeds the cap.
+    copy_table_block_keyed::<tables::BlockBodyIndices>(
+        &src_db,
+        &dst_db,
+        "BlockBodyIndices",
+        to_block,
+    )?;
     // BlockOmmers and BlockWithdrawals are typically sparse on BSC (no
     // ommers; withdrawals only post-Shanghai) but the stage expects them
     // present for blocks that have them. Copy verbatim.
-    copy_table::<tables::BlockOmmers>(&src_db, &dst_db, "BlockOmmers")?;
-    copy_table::<tables::BlockWithdrawals>(&src_db, &dst_db, "BlockWithdrawals")?;
+    copy_table_block_keyed::<tables::BlockOmmers>(&src_db, &dst_db, "BlockOmmers", to_block)?;
+    copy_table_block_keyed::<tables::BlockWithdrawals>(
+        &src_db,
+        &dst_db,
+        "BlockWithdrawals",
+        to_block,
+    )?;
+    // TransactionBlocks: key = TxNumber, value = BlockNumber. Cap on value.
+    copy_transaction_blocks(&src_db, &dst_db, to_block)?;
+
+    // TransactionSenders: key = TxNumber, value = Address. Cap on key — need
+    // to translate the block cap to a tx cap via BlockBodyIndices[cap_block].
+    // This produces the data that SenderRecovery would otherwise spend time
+    // re-deriving via ECDSA from every transaction signature.
+    let tx_cap_exclusive = match to_block {
+        Some(b) => Some(tx_number_upper_exclusive_for_block(&src_db, b)?),
+        None => None,
+    };
+    copy_transaction_senders(&src_db, &dst_db, tx_cap_exclusive)?;
 
     Ok(())
 }
 
-fn copy_table<T: reth_db::table::Table>(
+/// Given a block number cap, return `first_tx_num + tx_count` for that block
+/// — i.e. the exclusive upper bound on `TxNumber`s we want to keep. Used to
+/// cap `TransactionSenders` walks. Handles empty blocks (tx_count = 0)
+/// naturally: the return value equals the next block's first_tx_num, so
+/// a strict `<` comparison keeps nothing past the cap.
+fn tx_number_upper_exclusive_for_block(
+    src: &DatabaseEnv,
+    cap_block: BlockNumber,
+) -> eyre::Result<TxNumber> {
+    let tx = src.tx()?;
+    let indices = tx
+        .get::<tables::BlockBodyIndices>(cap_block)?
+        .ok_or_else(|| eyre::eyre!("cap block {cap_block} has no BlockBodyIndices on source"))?;
+    Ok(indices.first_tx_num + indices.tx_count)
+}
+
+/// Copy a table whose key is a `BlockNumber`. Stops when the key exceeds
+/// `cap` (if provided). Uses `cursor.append()` — destination must start
+/// empty for this table.
+fn copy_table_block_keyed<T: reth_db::table::Table<Key = BlockNumber>>(
     src: &DatabaseEnv,
     dst: &DatabaseEnv,
     label: &str,
+    cap: Option<BlockNumber>,
 ) -> eyre::Result<()>
 where
-    T::Key: Clone + std::fmt::Debug,
     T::Value: Clone,
 {
-    const BATCH: usize = 100_000;
     let t0 = Instant::now();
-    let src_tx = src.tx()?;
-    let mut cursor = src_tx.cursor_read::<T>()?;
     let mut dst_tx = dst.tx_mut()?;
+    let mut dst_cursor = dst_tx.cursor_write::<T>()?;
     let mut rows: u64 = 0;
     let mut in_batch: usize = 0;
-    let mut entry = cursor.first()?;
-    while let Some((k, v)) = entry {
-        dst_tx.put::<T>(k.clone(), v.clone())?;
-        rows += 1;
-        in_batch += 1;
-        if in_batch >= BATCH {
-            dst_tx.commit()?;
-            dst_tx = dst.tx_mut()?;
-            in_batch = 0;
-            if rows % 1_000_000 == 0 {
-                tracing::info!(table = label, rows, "progress");
+    let mut rows_since_refresh: u64 = 0;
+    let mut resume_from: Option<BlockNumber> = None;
+
+    'outer: loop {
+        let src_tx = src.tx()?;
+        let mut cursor = src_tx.cursor_read::<T>()?;
+        let mut entry = match resume_from {
+            None => cursor.first()?,
+            Some(k) => cursor.seek(k)?,
+        };
+        while let Some((k, v)) = entry {
+            if cap.map_or(false, |c| k > c) {
+                break 'outer;
             }
+            dst_cursor.append(k, &v)?;
+            rows += 1;
+            in_batch += 1;
+            rows_since_refresh += 1;
+            if in_batch >= WRITE_BATCH {
+                drop(dst_cursor);
+                dst_tx.commit()?;
+                dst_tx = dst.tx_mut()?;
+                dst_cursor = dst_tx.cursor_write::<T>()?;
+                in_batch = 0;
+                tracing::info!(
+                    table = label,
+                    rows,
+                    elapsed_secs = t0.elapsed().as_secs_f64(),
+                    rate_per_sec = (rows as f64 / t0.elapsed().as_secs_f64()) as u64,
+                    "progress",
+                );
+            }
+            if rows_since_refresh >= READ_REFRESH_ROWS {
+                resume_from = Some(k + 1);
+                rows_since_refresh = 0;
+                continue 'outer;
+            }
+            entry = cursor.next()?;
         }
-        entry = cursor.next()?;
+        break;
     }
+
+    drop(dst_cursor);
     dst_tx.commit()?;
     tracing::info!(
         table = label,
@@ -399,9 +488,173 @@ where
     Ok(())
 }
 
-/// Stamp `StageCheckpoints[Bodies]` = tip_block. (SenderRecovery +
-/// TransactionLookup are left unset on purpose — those stages are fast to
-/// rerun from the migrated data.)
+/// How many rows to copy inside a single source read transaction before
+/// releasing it and starting a new one. libmdbx kills read transactions
+/// older than ~5 minutes (to stop them pinning the GC), so for tables with
+/// billions of rows we MUST refresh.
+const READ_REFRESH_ROWS: u64 = 10_000_000;
+
+/// Rows per destination write transaction commit. Larger = fewer commit
+/// round-trips = higher throughput. Each write tx accumulates dirty pages
+/// until commit; 1M rows × ~40 B/row = ~40 MB dirty data per batch, well
+/// under MDBX's soft limits and easily held in RAM.
+const WRITE_BATCH: usize = 1_000_000;
+
+/// `TransactionBlocks` is keyed by `TxNumber` with value `BlockNumber`.
+/// We stop when the *value* (block) exceeds `cap`. Since the table is
+/// monotonic in tx_num — and each block's tx range is contiguous — once a
+/// row's block exceeds the cap, no later row can be in range either.
+///
+/// Uses `cursor.append()` on the destination (MDBX `WriteFlags::APPEND`) —
+/// the bulk-load fast path for strictly-increasing keys. Skips the full
+/// btree traversal on every insert and appends straight to the rightmost
+/// leaf. A 5-10× speedup over plain `tx.put()` on ordered input.
+///
+/// Destination MUST start empty for this table (wipe + re-init between runs);
+/// `append` fails if a key isn't strictly greater than the last inserted key.
+fn copy_transaction_blocks(
+    src: &DatabaseEnv,
+    dst: &DatabaseEnv,
+    cap: Option<BlockNumber>,
+) -> eyre::Result<()> {
+    let label = "TransactionBlocks";
+    let t0 = Instant::now();
+    let mut dst_tx = dst.tx_mut()?;
+    let mut dst_cursor = dst_tx.cursor_write::<tables::TransactionBlocks>()?;
+    let mut rows: u64 = 0;
+    let mut in_batch: usize = 0;
+    let mut rows_since_refresh: u64 = 0;
+    let mut resume_from: Option<TxNumber> = None;
+
+    'outer: loop {
+        let src_tx = src.tx()?;
+        let mut cursor = src_tx.cursor_read::<tables::TransactionBlocks>()?;
+        let mut entry = match resume_from {
+            None => cursor.first()?,
+            Some(k) => cursor.seek(k)?,
+        };
+
+        while let Some((k, v)) = entry {
+            if cap.map_or(false, |c| v > c) {
+                break 'outer;
+            }
+            dst_cursor.append(k, &v)?;
+            rows += 1;
+            in_batch += 1;
+            rows_since_refresh += 1;
+            if in_batch >= WRITE_BATCH {
+                drop(dst_cursor);
+                dst_tx.commit()?;
+                dst_tx = dst.tx_mut()?;
+                dst_cursor = dst_tx.cursor_write::<tables::TransactionBlocks>()?;
+                in_batch = 0;
+                tracing::info!(
+                    table = label,
+                    rows,
+                    elapsed_secs = t0.elapsed().as_secs_f64(),
+                    rate_per_sec = (rows as f64 / t0.elapsed().as_secs_f64()) as u64,
+                    "progress",
+                );
+            }
+            if rows_since_refresh >= READ_REFRESH_ROWS {
+                resume_from = Some(k + 1);
+                rows_since_refresh = 0;
+                continue 'outer;
+            }
+            entry = cursor.next()?;
+        }
+        break;
+    }
+
+    drop(dst_cursor);
+    dst_tx.commit()?;
+    tracing::info!(
+        table = label,
+        rows,
+        elapsed_secs = t0.elapsed().as_secs_f64(),
+        "copied",
+    );
+    Ok(())
+}
+
+/// `TransactionSenders` is keyed by `TxNumber` with value `Address`. We stop
+/// when the key exceeds `tx_cap_exclusive` (if set). Assumption: the v1
+/// source snapshot stores senders in this MDBX table — a v2 snapshot would
+/// instead put them in `static_file_transaction_senders_*` segments and this
+/// phase would be a no-op (or need a different copy path). The destination
+/// must also be initialized as v1 (`reth-bsc init --storage.v2 false`);
+/// otherwise reth 2.0 ignores MDBX `TransactionSenders` on a v2 datadir.
+///
+/// Uses `cursor.append()` + periodic read-tx refresh, same fast-path pattern
+/// as `copy_transaction_blocks`. Destination must start empty for this table.
+fn copy_transaction_senders(
+    src: &DatabaseEnv,
+    dst: &DatabaseEnv,
+    tx_cap_exclusive: Option<TxNumber>,
+) -> eyre::Result<()> {
+    let label = "TransactionSenders";
+    let t0 = Instant::now();
+    let mut dst_tx = dst.tx_mut()?;
+    let mut dst_cursor = dst_tx.cursor_write::<tables::TransactionSenders>()?;
+    let mut rows: u64 = 0;
+    let mut in_batch: usize = 0;
+    let mut rows_since_refresh: u64 = 0;
+    let mut resume_from: Option<TxNumber> = None;
+
+    'outer: loop {
+        let src_tx = src.tx()?;
+        let mut cursor = src_tx.cursor_read::<tables::TransactionSenders>()?;
+        let mut entry = match resume_from {
+            None => cursor.first()?,
+            Some(k) => cursor.seek(k)?,
+        };
+
+        while let Some((k, v)) = entry {
+            if tx_cap_exclusive.map_or(false, |c| k >= c) {
+                break 'outer;
+            }
+            dst_cursor.append(k, &v)?;
+            rows += 1;
+            in_batch += 1;
+            rows_since_refresh += 1;
+            if in_batch >= WRITE_BATCH {
+                drop(dst_cursor);
+                dst_tx.commit()?;
+                dst_tx = dst.tx_mut()?;
+                dst_cursor = dst_tx.cursor_write::<tables::TransactionSenders>()?;
+                in_batch = 0;
+                tracing::info!(
+                    table = label,
+                    rows,
+                    elapsed_secs = t0.elapsed().as_secs_f64(),
+                    rate_per_sec = (rows as f64 / t0.elapsed().as_secs_f64()) as u64,
+                    "progress",
+                );
+            }
+            if rows_since_refresh >= READ_REFRESH_ROWS {
+                resume_from = Some(k + 1);
+                rows_since_refresh = 0;
+                continue 'outer;
+            }
+            entry = cursor.next()?;
+        }
+        break;
+    }
+
+    drop(dst_cursor);
+    dst_tx.commit()?;
+    tracing::info!(
+        table = label,
+        rows,
+        elapsed_secs = t0.elapsed().as_secs_f64(),
+        "copied",
+    );
+    Ok(())
+}
+
+/// Stamp `StageCheckpoints` for every stage whose data the bodies phase
+/// migrated. `TransactionLookup` is still left unset — that's stage 11 and
+/// we haven't wired `TransactionHashNumbers` migration yet.
 fn stamp_checkpoints(to_datadir: &Path, tip_block: BlockNumber, _phase: Phase) -> eyre::Result<()> {
     use reth_stages_types::{StageCheckpoint, StageId};
 
@@ -411,12 +664,14 @@ fn stamp_checkpoints(to_datadir: &Path, tip_block: BlockNumber, _phase: Phase) -
     )
     .map_err(|e| eyre::eyre!("init dest db for checkpoint stamp: {e}"))?;
     let tx = db.tx_mut()?;
-    tx.put::<tables::StageCheckpoints>(StageId::Bodies.to_string(), StageCheckpoint::new(tip_block))?;
+    let cp = StageCheckpoint::new(tip_block);
+    tx.put::<tables::StageCheckpoints>(StageId::Bodies.to_string(), cp)?;
+    tx.put::<tables::StageCheckpoints>(StageId::SenderRecovery.to_string(), cp)?;
     tx.commit()?;
     tracing::info!(
-        stage = "Bodies",
+        stages = "Bodies, SenderRecovery",
         tip_block,
-        "stage checkpoint stamped; SenderRecovery + TransactionLookup left for the node",
+        "stage checkpoints stamped; TransactionLookup left for the node",
     );
     Ok(())
 }

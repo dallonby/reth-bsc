@@ -200,8 +200,23 @@ fn copy_file(src: &Path, dst: &Path) -> eyre::Result<u64> {
     const LARGE_FILE_THRESHOLD: u64 = 128 * 1024 * 1024; // 128 MB
     const CHUNK_SIZE: u64 = 128 * 1024 * 1024; // 128 MB per copy_file_range call
 
+    // If the destination exists, it's almost certainly a genesis-stub written
+    // by `reth-bsc init` (single-block segment, < 1 MB). The user is
+    // expected to run `init` first so that genesis state (PlainAccountState,
+    // Bytecodes, …) is populated; without that step BSC's pre-execution
+    // returns 0 gas for every system tx in block 1 and unwinds the chain.
+    // Once init has run, the stub headers/transactions/receipts segments at
+    // range 0..=499999 must be replaced by our migrated, real-data versions.
+    // Delete + log.
     if dst.exists() {
-        eyre::bail!("{} already exists; refusing to overwrite", dst.display());
+        let stub_size = dst.metadata().map(|m| m.len()).unwrap_or(0);
+        tracing::warn!(
+            path = %dst.display(),
+            stub_size,
+            "destination already exists (likely a `reth-bsc init` stub); deleting before copy"
+        );
+        fs::remove_file(dst)
+            .map_err(|e| eyre::eyre!("remove existing {}: {e}", dst.display()))?;
     }
 
     let src_file = fs::File::open(src)
@@ -217,9 +232,6 @@ fn copy_file(src: &Path, dst: &Path) -> eyre::Result<u64> {
         drop(src_file);
         return match fs::copy(src, dst) {
             Ok(n) => Ok(n),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                eyre::bail!("{} already exists; refusing to overwrite", dst.display())
-            }
             Err(e) => Err(eyre::eyre!("copy {} -> {}: {e}", src.display(), dst.display())),
         };
     }
