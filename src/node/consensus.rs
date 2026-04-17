@@ -1045,18 +1045,50 @@ mod tests {
 }
 
 /// Calculate the receipts root, and compare it against the expected receipts root and logs bloom.
-/// This is a direct copy of reth's implementation from:
+///
+/// # Perf note
+///
+/// reth's upstream implementation calls `with_bloom_ref()` on each
+/// receipt SEQUENTIALLY before building the trie. Per-receipt bloom
+/// computation walks every log and keccak256-hashes `(address, topic)`
+/// tuples, which is CPU-heavy and mutually independent across receipts.
+/// On a dense BSC block (200+ txs with mixed DEX activity) that's the
+/// dominant cost of `validate_block_post_execution`, which runs on
+/// EVERY block during pipeline sync.
+///
+/// Parallelising via rayon: `par_iter().map(with_bloom_ref).collect()`.
+/// Cache contention is minimal — `alloy_primitives` keccak-cache-global
+/// is a fixed-size set-associative cache with no global lock. Threads
+/// racing on the same slot just do two writes of the same value.
+///
+/// Upstream ref (serial):
 /// https://github.com/paradigmxyz/reth/blob/616e492c79bb4143071ac6bf0831a249a504359f/crates/ethereum/consensus/src/validation.rs#L71
-fn verify_receipts<R: reth_primitives_traits::Receipt>(
+fn verify_receipts<R>(
     expected_receipts_root: B256,
     expected_logs_bloom: alloy_primitives::Bloom,
     receipts: &[R],
-) -> Result<(), reth_ethereum::consensus::ConsensusError> {
-    // Calculate receipts root.
-    let receipts_with_bloom = receipts.iter().map(TxReceipt::with_bloom_ref).collect::<Vec<_>>();
+) -> Result<(), reth_ethereum::consensus::ConsensusError>
+where
+    R: reth_primitives_traits::Receipt + Sync,
+{
+    use rayon::prelude::*;
+
+    // Parallel bloom precompute. Each receipt is independent; no shared
+    // state. `TxReceipt::with_bloom_ref` reads the receipt's logs and
+    // hashes log addresses + topics via alloy's keccak256 (cache hits
+    // when keccak-cache-global is enabled in the build).
+    let receipts_with_bloom: Vec<_> =
+        receipts.par_iter().map(TxReceipt::with_bloom_ref).collect();
+
+    // `calculate_receipt_root` itself is a sequential trie build — not
+    // worth parallelising (merkle structure) but benefits from the
+    // already-computed blooms.
     let receipts_root = alloy_consensus::proofs::calculate_receipt_root(&receipts_with_bloom);
 
-    // Calculate header logs bloom.
+    // Header logs bloom: OR across every receipt's bloom. Also
+    // trivially parallel via `par_iter().reduce(...)` — but with the
+    // blooms already computed, it's ~200 256-byte ORs = microseconds.
+    // Left sequential.
     let logs_bloom = receipts_with_bloom
         .iter()
         .fold(alloy_primitives::Bloom::ZERO, |bloom, r| bloom | r.bloom_ref());

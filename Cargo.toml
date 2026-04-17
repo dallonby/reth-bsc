@@ -148,6 +148,7 @@ phf = { version = "0.11", features = ["macros"] }
 once_cell = { version = "1.19", default-features = false, features = ["alloc"] }
 parity-bytes = { version = "0.1.2", default-features = false }
 parking_lot = "0.12"
+rayon = "1.10"
 dashmap = "6.1"
 secp256k1 = { version = "0.30", features = [
     "global-context",
@@ -201,7 +202,7 @@ libc = "0.2"
 # bloom, tx hashing, trie root compute) on x86_64 machines that have
 # SHA-NI. On non-x86 hosts or hosts without SHA-NI the feature is still
 # safe — alloy-primitives falls back to the C/pure-Rust implementation.
-default = ["jemalloc", "asm-keccak"]
+default = ["jemalloc", "asm-keccak", "keccak-cache-global"]
 jemalloc = ["dep:tikv-jemallocator"]
 dev = ["reth-cli-commands/arbitrary", "revm/dev"]
 asm-keccak = [
@@ -213,9 +214,12 @@ asm-keccak = [
 # Enable alloy-primitives' process-global Keccak-256 result cache.
 # `keccak256(bytes)` becomes a lookup on recent inputs; repeated hashes
 # of the same bytes (storage keys, contract addresses, tx hashes
-# re-computed downstream) hit the cache instead of recomputing.
-# Propagates through reth-ethereum / node-core / node-ethereum so all
-# transitive reth internals share the same cache.
+# re-computed downstream) hit the cache instead of recomputing. The
+# cache is a fixed-size set-associative array, not a locked hashmap —
+# contention under parallelism (e.g. receipt-bloom verification) is
+# minimal. Propagates through reth-ethereum / node-core / node-ethereum
+# so all transitive reth internals share the same cache.
+# IN DEFAULT: release + maxperf builds pick it up automatically.
 keccak-cache-global = [
     "alloy-primitives/keccak-cache-global",
     "reth-ethereum/keccak-cache-global",
