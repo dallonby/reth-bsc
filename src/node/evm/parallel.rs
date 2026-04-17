@@ -28,10 +28,43 @@
 //!   `&DB: DatabaseRef` — including revm's `State<DB: DatabaseRef>`
 //!   itself, whose cache-first DatabaseRef impl lets parallel workers
 //!   observe `apply_pre_execution_changes` mutations lock-free.
-//! - `BscBlockExecutor::execute_block` is overridden with the runtime
-//!   branch on `ctx.parallel`. Today the branch is a scaffold: it
-//!   materialises the tx slice, logs, and falls through to the serial
-//!   loop. Flag-on and flag-off behaviour are byte-identical.
+//! - `BscBlockExecutor::execute_block` override with `ctx.parallel`
+//!   runtime branch (scaffold, falls through to serial).
+//! - **`BscBlockExecutor::execute_block_parallel<DB>` inherent method**
+//!   — the real parallel dispatch. Method-level where clauses pin
+//!   `EVM::DB = &'a mut State<DB>` with `DB: Database + DatabaseRef +
+//!   Send + Sync` so the method is only callable from call sites whose
+//!   concrete types satisfy (production sync: yes, miner path: no).
+//!   Does the full parallel loop: pre-exec → tx split → Hertz fallback
+//!   check → ParallelExecutor dispatch → serial commit via
+//!   `self.commit_transaction` → system tail → post-exec. All types
+//!   Reth SDK (ExecutableTx, BlockExecutionResult, BlockExecutor); the
+//!   `ParallelExecutor` engine is our portable `parallel-evm` crate.
+//!   Compile-check test in executor.rs proves the method resolves on
+//!   the production-shaped concrete types `BscEvm<&'a mut State<DB>,
+//!   NoOpInspector>, Arc<BscChainSpec>, RethReceiptBuilder`.
+//!
+//! # Activation path (not yet done — last-mile wiring)
+//!
+//! The method exists and is callable; the remaining piece is making
+//! reth's pipeline sync USE it instead of the default serial
+//! `execute_block`. That needs a custom `ExecutionStage` in our node's
+//! pipeline construction that, when `ctx.parallel` is set, calls
+//! `executor.execute_block_parallel(txs)` instead of the trait's
+//! `execute_block(txs)`. Steps:
+//!
+//! 1. In `main.rs` / `node/mod.rs`, customise the pipeline stage set
+//!    (reth exposes this via `StageSet` / `StagesBuilder`).
+//! 2. Define `BscParallelExecutionStage<E>` mirroring reth's
+//!    `ExecutionStage<E>` but with one line changed: the inner
+//!    `executor.execute_one(input)` call becomes
+//!    `executor.execute_one_parallel(input)` (a thin wrapper that
+//!    internally dispatches to `execute_block_parallel` when
+//!    `ctx.parallel`).
+//! 3. Register the stage in place of reth's default.
+//!
+//! Scope: ~200 LOC of pipeline-stage boilerplate, one-file change.
+//! The architectural work is done — this is glue.
 //!
 //! Next — the substantive work to turn the scaffold into a real
 //! `ParallelExecutor` dispatch. Done in order because step 1 is the
