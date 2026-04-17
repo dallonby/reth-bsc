@@ -809,4 +809,38 @@ where
         &self.receipts
     }
 
+    fn execute_block(
+        mut self,
+        transactions: impl IntoIterator<Item = impl ExecutableTx<Self>>,
+    ) -> Result<BlockExecutionResult<Self::Receipt>, BlockExecutionError>
+    where
+        Self: Sized,
+    {
+        self.apply_pre_execution_changes()?;
+
+        // Parallel-branch scaffold. When `--bsc.parallel-execute` is on for a
+        // full (non-speculative, non-miner) block, materialise the tx slice
+        // and report it; this is the hook-point where `ParallelExecutor`
+        // will slot in. Until the serial-commit phase lands, we still run
+        // the stock per-tx loop below so behaviour is byte-identical to the
+        // flag-off case.
+        if self.ctx.parallel {
+            let txs: Vec<_> = transactions.into_iter().collect();
+            tracing::debug!(
+                target: "bsc::executor::parallel",
+                block_number = self.evm.block().number().to::<u64>(),
+                num_txs = txs.len(),
+                "execute_block hit parallel branch (scaffold — serial fallback)"
+            );
+            for tx in txs {
+                self.execute_transaction(tx)?;
+            }
+        } else {
+            for tx in transactions {
+                self.execute_transaction(tx)?;
+            }
+        }
+
+        self.apply_post_execution_changes()
+    }
 }
