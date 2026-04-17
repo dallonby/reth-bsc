@@ -198,9 +198,12 @@ where
         let want_parallel = crate::shared::is_parallel_execute_enabled();
         if want_parallel {
             if let Some(spawner) = crate::shared::get_parallel_state_spawner() {
-                let spawner = spawner.clone();
+                // `spawner` is a `&'static Arc<...>` — pass through
+                // without cloning the Arc (the inner dyn reference
+                // `&**spawner` is what workers hold, and its lifetime
+                // is already bounded by the thread::scope join).
                 let block_number = block.header().number;
-                match self.try_execute_one_parallel(block, &spawner) {
+                match self.try_execute_one_parallel(block, spawner) {
                     Ok(result) => {
                         self.state.merge_transitions(BundleRetention::Reverts);
                         debug!(
