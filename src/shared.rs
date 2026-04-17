@@ -67,6 +67,28 @@ static BID_PACKAGE_QUEUE: OnceLock<Arc<Mutex<VecDeque<crate::node::miner::bid_si
 /// Global network handle to interact with P2P (reth).
 static NETWORK_HANDLE: OnceLock<NetworkHandle<BscNetworkPrimitives>> = OnceLock::new();
 
+/// Global flag: run the user-tx phase of each block through the
+/// parallel-evm Block-STM executor. Set once at node startup from the
+/// `--bsc.parallel-execute` CLI flag; read by
+/// `BscEvmConfig::context_for_block` on every block.
+///
+/// Uses an atomic bool so the read side is free; write side is one-shot
+/// at startup.
+static PARALLEL_EXECUTE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Set the `--bsc.parallel-execute` flag at node startup. Idempotent.
+pub fn set_parallel_execute_enabled(enabled: bool) {
+    PARALLEL_EXECUTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the parallel-execute flag. Called once per block from
+/// `context_for_block`; cheap (relaxed atomic load).
+#[inline]
+pub fn is_parallel_execute_enabled() -> bool {
+    PARALLEL_EXECUTE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Global payload events broadcast sender
 static PAYLOAD_EVENTS_TX: OnceLock<broadcast::Sender<Events<BscPayloadTypes>>> = OnceLock::new();
 /// Broadcast channel for notifying about successfully imported block hashes

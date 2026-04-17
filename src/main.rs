@@ -126,6 +126,22 @@ pub struct BscCliArgs {
         default_value_t = 128
     )]
     pub speculative_prefetch_window: u64,
+
+    /// Run the user-tx phase of each block through the `parallel-evm`
+    /// Block-STM executor instead of the serial loop.
+    ///
+    /// When enabled, user transactions in each block are executed
+    /// concurrently across worker threads; the per-tx results are then
+    /// committed serially to the block's state DB in tx order, preserving
+    /// deterministic outcomes. Parlia pre/post-execution hooks, system
+    /// transactions, and validator rewards remain serial.
+    ///
+    /// Off by default while the integration is burning in. Any
+    /// unexpected condition (re-execution budget exhausted, storage
+    /// error, Hertz-patched block) falls back to the serial path for
+    /// that block.
+    #[arg(long = "bsc.parallel-execute", env = "BSC_PARALLEL_EXECUTE", default_value_t = false)]
+    pub parallel_execute: bool,
 }
 
 fn main() -> eyre::Result<()> {
@@ -374,6 +390,15 @@ fn main() -> eyre::Result<()> {
             // Capture prefetcher CLI values before moving into the closure.
             let speculative_prefetch_workers = args.speculative_prefetch_workers;
             let speculative_prefetch_window = args.speculative_prefetch_window;
+
+            // Parallel-execute feature flag. Goes to a global atomic read by
+            // every BscEvmConfig::context_for_block — the context struct
+            // carries the bool through to the BscBlockExecutor which branches
+            // on it inside `execute_transactions`.
+            reth_bsc::shared::set_parallel_execute_enabled(args.parallel_execute);
+            if args.parallel_execute {
+                tracing::info!(target: "bsc::init", "parallel-evm block-STM execution enabled");
+            }
 
             let NodeHandle { node, node_exit_future: exit_future } =
                 builder

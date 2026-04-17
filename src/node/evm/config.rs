@@ -83,6 +83,17 @@ pub struct BscBlockExecutionCtx<'a> {
     /// from `blst` in the execution hot path. Must remain `false` on any
     /// live / unvalidated path.
     pub skip_bls_verify: bool,
+    /// Run the user-tx phase of this block through the parallel-evm
+    /// Block-STM executor instead of the serial loop.
+    ///
+    /// Pre/post-block hooks (Parlia check, snapshot writes, system txs,
+    /// validator rewards) stay serial regardless — only the user-tx loop
+    /// parallelises. Fall back to serial on any `parallel_evm::Error` or
+    /// on blocks that touch Hertz patches.
+    ///
+    /// Populated from the global flag set by `--bsc.parallel-execute`
+    /// in `context_for_block`.
+    pub parallel: bool,
     /// Whether this executor is a speculative prefetch worker.
     ///
     /// When `true`, every global-mutating code path (Parlia snapshot writes,
@@ -418,6 +429,7 @@ where
             // it reclaims ~8% CPU. Speculative workers bypass it too (they
             // bypass nearly everything).
             skip_bls_verify: true,
+            parallel: !speculative && crate::shared::is_parallel_execute_enabled(),
             speculative,
         })
     }
@@ -442,6 +454,9 @@ where
             // Miner path already bypasses the whole pre-execution check via
             // `is_miner`; keep this conservative.
             skip_bls_verify: false,
+            // Live miner path is serial — cannot afford parallel's restart
+            // risk during block building.
+            parallel: false,
             // Live miner path is the main thread; never speculative.
             speculative: false,
         })
@@ -512,6 +527,9 @@ where
             is_miner: false,
             // Live engine path handles unvalidated payloads — must verify BLS.
             skip_bls_verify: false,
+            // Live engine path is latency-critical single-block execution —
+            // parallel overhead doesn't help here.
+            parallel: false,
             // Live engine path is the main thread; never speculative.
             speculative: false,
         })

@@ -438,6 +438,14 @@ where
             return Ok(());
         }
 
+        if self.ctx.parallel {
+            tracing::debug!(
+                target: "bsc::executor::parallel",
+                block_number,
+                "parallel-execute enabled for this block (serial fallback until branch is wired)"
+            );
+        }
+
         // pre check and prepare some intermediate data for commit parlia snapshot in finish function.
         if self.ctx.is_miner {
             self.prepare_new_block(&block_env)?;

@@ -17,6 +17,22 @@
 //! pre/post-execution hooks (snapshot updates, validator rewards, system
 //! txs). The integration sketch is at the bottom of this doc comment.
 //!
+//! # Wiring status (2026-04-17)
+//!
+//! The `--bsc.parallel-execute` CLI flag is live: it sets a process-wide
+//! atomic in [`crate::shared`], which `BscEvmConfig::context_for_block`
+//! reads and propagates through `BscBlockExecutionCtx::parallel` on every
+//! non-speculative block. `BscBlockExecutor::apply_pre_execution_changes`
+//! logs a `debug!` line when the flag is active.
+//!
+//! Not yet wired: the actual parallel branch that replaces the default
+//! tx-iteration loop with a `ParallelExecutor` call. That requires (a) a
+//! concrete `Storage` impl over the executor's `State<DB>` (the existing
+//! `RethStorage<R>` stub is a placeholder), and (b) a serial commit phase
+//! that applies Hertz patches, `on_state` hooks, receipt building, and
+//! state commits in tx order. Until that lands, flag-on behaves
+//! identically to flag-off (serial loop) with a per-block log marker.
+//!
 //! # Integration sketch
 //!
 //! Inside `BscBlockExecutor::execute_transactions` (or in a new
