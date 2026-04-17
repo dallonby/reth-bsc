@@ -36,16 +36,8 @@
 //!      custom) → [`TransactOutcome::ValidationError`]
 //!    - `Ok(result_and_state)` → [`TransactOutcome::Completed`]
 
-use crate::{
-    db_wrapper::DbWrapper,
-    mv_memory::TxIdx,
-    read_set::ReadLog,
-    storage::Storage,
-};
-use revm::{
-    context::{result::ResultAndState, BlockEnv},
-    primitives::hardfork::SpecId,
-};
+use crate::{db_wrapper::DbWrapper, mv_memory::TxIdx, storage::Storage};
+use revm::context::{result::ResultAndState, BlockEnv};
 
 /// Outcome returned by [`VmBuilder::transact`].
 ///
@@ -78,15 +70,6 @@ pub enum TransactOutcome<H> {
     ValidationError(String),
 }
 
-/// Full result of a single `transact` call, including the accumulated read
-/// log. The worker feeds the log into the scheduler's [`ReadSetStore`] for
-/// the validation phase.
-#[derive(Debug)]
-pub struct TransactResult<H> {
-    pub outcome: TransactOutcome<H>,
-    pub reads: Vec<ReadLog>,
-}
-
 /// Caller-implemented hook that wraps a revm variant.
 ///
 /// Thread-safe (`Send + Sync`): one instance is shared across all worker
@@ -107,22 +90,28 @@ pub trait VmBuilder: Send + Sync {
     /// for mainnet, or a chain-specific variant.
     type HaltReason: Send + std::fmt::Debug;
 
+    /// Chain's hard-fork spec type. Vanilla Ethereum uses revm's
+    /// `SpecId` directly; BSC uses `BscHardfork` (carries extra forks
+    /// like Luban/Feynman that don't fit in `SpecId`); OP uses
+    /// `OpSpecId`. Must be shareable across worker threads.
+    type Spec: Clone + Send + Sync + 'static;
+
     /// Execute `tx` against the supplied `DbWrapper`.
     ///
     /// # Contract
     ///
-    /// - The impl MUST consume `db` through its EVM — no borrowing past
-    ///   the EVM's lifetime.
-    /// - The impl MUST extract `db.into_read_log()` and return it in the
-    ///   `reads` field, regardless of success/failure. A blocked or
-    ///   errored tx still has a partial log that the caller discards.
+    /// - The impl consumes `db` by handing it to the EVM.
+    /// - Read logging is handled automatically by `DbWrapper` — it shares
+    ///   an `Arc<Mutex<_>>` with the worker, so the worker can retrieve
+    ///   the log after this method returns without needing to recover
+    ///   the DB from inside the EVM.
     /// - Errors from revm MUST be mapped onto the four [`TransactOutcome`]
     ///   variants.
     fn transact<S: Storage>(
         &self,
         db: DbWrapper<'_, S>,
         block_env: &BlockEnv,
-        spec_id: SpecId,
+        spec: &Self::Spec,
         tx: &Self::Tx,
-    ) -> TransactResult<Self::HaltReason>;
+    ) -> TransactOutcome<Self::HaltReason>;
 }

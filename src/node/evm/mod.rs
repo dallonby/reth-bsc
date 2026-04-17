@@ -1,4 +1,5 @@
 pub mod error;
+pub mod parallel;
 pub mod util;
 
 #[cfg(test)]

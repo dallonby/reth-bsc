@@ -32,11 +32,13 @@
 
 use crate::{
     mv_memory::{MemoryLocation, MemoryValue, MvMemory, ReadOutcome, TxIdx},
-    read_set::{ReadLog, ReadLogBuilder, ReadOrigin},
+    read_set::{ReadLog, ReadOrigin},
     storage::Storage,
 };
 use alloy_primitives::{Address, B256, U256};
+use parking_lot::Mutex;
 use revm::{bytecode::Bytecode, state::AccountInfo};
+use std::{fmt, sync::Arc};
 use thiserror::Error;
 
 /// Error type surfaced by the wrapper's [`revm::Database`] impl.
@@ -75,6 +77,24 @@ pub enum DbError {
 // machinery. Opting in is just an empty impl.
 impl revm::database::DBErrorMarker for DbError {}
 
+/// Shared handle to a read log. The worker holds a clone outside the EVM
+/// so it can retrieve the log after the EVM (and the `DbWrapper` it
+/// consumed) are dropped.
+///
+/// Using `Arc<Mutex<Vec<ReadLog>>>` instead of raw ownership side-steps a
+/// thorny revm issue: `BscEvm` (and many other chain-specific variants)
+/// don't expose an `into_inner()` to recover the consumed `Database`, so
+/// owned per-wrapper state would be unreachable after the EVM is dropped.
+/// The `Mutex` is single-thread contention (only the worker running this
+/// tx touches it) — parking_lot handles that in tens of nanoseconds.
+pub type ReadLogHandle = Arc<Mutex<Vec<ReadLog>>>;
+
+/// Make a fresh empty handle. Workers allocate one per tx execution,
+/// clone into the wrapper, then extract after `VmBuilder::transact`.
+pub fn new_read_log_handle() -> ReadLogHandle {
+    Arc::new(Mutex::new(Vec::new()))
+}
+
 /// Wraps the caller's `Storage` + [`MvMemory`] for a single tx execution.
 ///
 /// Constructed fresh per tx, passed into revm by value, dropped when revm
@@ -83,32 +103,36 @@ pub struct DbWrapper<'a, S: Storage> {
     storage: &'a S,
     mv_memory: &'a MvMemory,
     reader_tx_idx: TxIdx,
-    read_log: ReadLogBuilder,
+    /// Shared handle to the read log. See [`ReadLogHandle`].
+    read_log: ReadLogHandle,
+}
+
+impl<'a, S: Storage + fmt::Debug> fmt::Debug for DbWrapper<'a, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DbWrapper")
+            .field("reader_tx_idx", &self.reader_tx_idx)
+            .field("reads", &self.read_log.lock().len())
+            .finish()
+    }
 }
 
 impl<'a, S: Storage> DbWrapper<'a, S> {
-    /// Create a wrapper for transaction `reader_tx_idx`.
-    pub fn new(storage: &'a S, mv_memory: &'a MvMemory, reader_tx_idx: TxIdx) -> Self {
+    /// Create a wrapper for transaction `reader_tx_idx`. The `read_log`
+    /// handle is shared with the caller; workers call
+    /// [`new_read_log_handle`] to allocate one, pass a clone here, keep
+    /// the other clone to retrieve results after the EVM is dropped.
+    pub fn new(
+        storage: &'a S,
+        mv_memory: &'a MvMemory,
+        reader_tx_idx: TxIdx,
+        read_log: ReadLogHandle,
+    ) -> Self {
         Self {
             storage,
             mv_memory,
             reader_tx_idx,
-            read_log: ReadLogBuilder::new(),
+            read_log,
         }
-    }
-
-    /// Consume the wrapper and return the accumulated read log.
-    ///
-    /// The worker calls this after the EVM has been dropped (i.e. after
-    /// `VmBuilder::transact` returns) and feeds the log into the scheduler's
-    /// [`ReadSetStore`].
-    pub fn into_read_log(self) -> Vec<ReadLog> {
-        self.read_log.finish()
-    }
-
-    /// Number of reads recorded so far. Diagnostic.
-    pub fn reads_len(&self) -> usize {
-        self.read_log.len()
     }
 
     /// Internal helper: look up `location` through MvMemory + Storage,
@@ -120,7 +144,10 @@ impl<'a, S: Storage> DbWrapper<'a, S> {
     ) -> Result<Option<MemoryValue>, DbError> {
         match self.mv_memory.read(&location, self.reader_tx_idx) {
             ReadOutcome::Versioned { writer, value } => {
-                self.read_log.push(location, ReadOrigin::Versioned(writer));
+                self.read_log.lock().push(ReadLog {
+                    location,
+                    origin: ReadOrigin::Versioned(writer),
+                });
                 Ok(Some(value))
             }
             ReadOutcome::Blocked { blocking_tx_idx } => {
@@ -130,7 +157,10 @@ impl<'a, S: Storage> DbWrapper<'a, S> {
                 Err(DbError::Blocked { blocking_tx_idx })
             }
             ReadOutcome::NotFound => {
-                self.read_log.push(location, ReadOrigin::Storage);
+                self.read_log.lock().push(ReadLog {
+                    location,
+                    origin: ReadOrigin::Storage,
+                });
                 Ok(None)
             }
         }
@@ -219,7 +249,7 @@ mod tests {
 
     /// Tiny in-memory Storage for tests. Holds `HashMap`s keyed by the kind
     /// of read. `Infallible` error to keep callers simple.
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct Mem {
         basic: HashMap<Address, AccountInfo>,
         storage: HashMap<(Address, U256), U256>,
@@ -257,19 +287,33 @@ mod tests {
     const ADDR_A: Address = address!("0x000000000000000000000000000000000000000a");
     const ADDR_B: Address = address!("0x000000000000000000000000000000000000000b");
 
+    /// Test-helper: build a DbWrapper and its shared read-log handle.
+    fn make_db<'a>(
+        mem: &'a Mem,
+        mv: &'a MvMemory,
+        tx_idx: TxIdx,
+    ) -> (DbWrapper<'a, Mem>, ReadLogHandle) {
+        let h = new_read_log_handle();
+        (DbWrapper::new(mem, mv, tx_idx, h.clone()), h)
+    }
+
+    /// Drain the log from the handle for inspection.
+    fn drain(h: &ReadLogHandle) -> Vec<crate::read_set::ReadLog> {
+        std::mem::take(&mut *h.lock())
+    }
+
     #[test]
     fn basic_falls_through_to_storage_when_mv_empty() {
         let mut mem = Mem::default();
         mem.basic.insert(ADDR_A, info(100, 3));
         let mv = MvMemory::new();
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, h) = make_db(&mem, &mv, 5);
 
         let got = db.basic(ADDR_A).unwrap().unwrap();
         assert_eq!(got.balance, U256::from(100));
         assert_eq!(got.nonce, 3);
 
-        // Read was logged as Storage origin.
-        let log = db.into_read_log();
+        let log = drain(&h);
         assert_eq!(log.len(), 1);
         assert!(matches!(log[0].origin, ReadOrigin::Storage));
     }
@@ -279,19 +323,18 @@ mod tests {
         let mut mem = Mem::default();
         mem.basic.insert(ADDR_A, info(100, 3));
         let mv = MvMemory::new();
-        // An earlier tx wrote a different balance for the same address.
         mv.write(
             MemoryLocation::Basic(ADDR_A),
             Version { tx_idx: 2, incarnation: 0 },
             MemoryValue::Basic(info(999, 7)),
         );
 
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, h) = make_db(&mem, &mv, 5);
         let got = db.basic(ADDR_A).unwrap().unwrap();
         assert_eq!(got.balance, U256::from(999));
         assert_eq!(got.nonce, 7);
 
-        let log = db.into_read_log();
+        let log = drain(&h);
         assert_eq!(log.len(), 1);
         assert!(matches!(
             log[0].origin,
@@ -303,13 +346,12 @@ mod tests {
     fn storage_returns_zero_when_nothing_written() {
         let mem = Mem::default();
         let mv = MvMemory::new();
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, h) = make_db(&mem, &mv, 5);
 
         let v = db.storage(ADDR_A, U256::from(42)).unwrap();
         assert_eq!(v, U256::ZERO);
 
-        // Still records as a Storage origin read (it fell through).
-        let log = db.into_read_log();
+        let log = drain(&h);
         assert_eq!(log.len(), 1);
         assert!(matches!(log[0].origin, ReadOrigin::Storage));
     }
@@ -323,11 +365,11 @@ mod tests {
             Version { tx_idx: 3, incarnation: 2 },
             MemoryValue::Storage(U256::from(42)),
         );
-        let mut db = DbWrapper::new(&mem, &mv, 10);
+        let (mut db, h) = make_db(&mem, &mv, 10);
         let v = db.storage(ADDR_A, U256::from(1)).unwrap();
         assert_eq!(v, U256::from(42));
 
-        let log = db.into_read_log();
+        let log = drain(&h);
         assert_eq!(log.len(), 1);
         assert!(matches!(
             log[0].origin,
@@ -346,7 +388,7 @@ mod tests {
         );
         assert!(mv.mark_estimate(MemoryLocation::Basic(ADDR_A), 2));
 
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, h) = make_db(&mem, &mv, 5);
         let err = db.basic(ADDR_A).unwrap_err();
         assert_eq!(
             err,
@@ -355,10 +397,8 @@ mod tests {
             }
         );
 
-        // Blocked reads are NOT logged — they don't represent a
-        // consistent observation and would poison validation.
-        let log = db.into_read_log();
-        assert!(log.is_empty());
+        // Blocked reads are NOT logged.
+        assert!(drain(&h).is_empty());
     }
 
     #[test]
@@ -370,10 +410,9 @@ mod tests {
             Version { tx_idx: 2, incarnation: 0 },
             MemoryValue::SelfDestructed,
         );
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, _h) = make_db(&mem, &mv, 5);
         assert!(db.basic(ADDR_A).unwrap().is_none());
 
-        // Storage at a selfdestructed account reads as zero.
         mv.write(
             MemoryLocation::Storage(ADDR_A, U256::from(1)),
             Version { tx_idx: 2, incarnation: 0 },
@@ -390,7 +429,7 @@ mod tests {
         let code = Bytecode::new_raw(vec![0x00u8].into());
         mem.code.insert(h, code.clone());
         let mv = MvMemory::new();
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, _log) = make_db(&mem, &mv, 5);
         let got = db.code_by_hash(h).unwrap();
         assert_eq!(got, code);
     }
@@ -401,24 +440,22 @@ mod tests {
         let h = b256!("0x2222222222222222222222222222222222222222222222222222222222222222");
         mem.blocks.insert(100, h);
         let mv = MvMemory::new();
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, log) = make_db(&mem, &mv, 5);
         let got = db.block_hash(100).unwrap();
         assert_eq!(got, h);
-        assert!(db.into_read_log().is_empty());
+        assert!(drain(&log).is_empty());
     }
 
     #[test]
     fn kind_mismatch_surfaces_as_internal_error() {
         let mem = Mem::default();
         let mv = MvMemory::new();
-        // Wrong kind planted at a Basic location: Storage value. Shouldn't
-        // happen in practice but tests defence-in-depth.
         mv.write(
             MemoryLocation::Basic(ADDR_B),
             Version { tx_idx: 1, incarnation: 0 },
             MemoryValue::Storage(U256::from(1)),
         );
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, _h) = make_db(&mem, &mv, 5);
         let err = db.basic(ADDR_B).unwrap_err();
         assert!(matches!(err, DbError::KindMismatch(_)));
     }
@@ -433,12 +470,12 @@ mod tests {
             MemoryValue::Basic(info(100, 0)),
         );
 
-        let mut db = DbWrapper::new(&mem, &mv, 5);
+        let (mut db, h) = make_db(&mem, &mv, 5);
         let _ = db.basic(ADDR_A).unwrap();
-        let _ = db.basic(ADDR_B).unwrap(); // misses MV, Storage, None
+        let _ = db.basic(ADDR_B).unwrap();
         let _ = db.storage(ADDR_A, U256::from(9)).unwrap();
 
-        let log = db.into_read_log();
+        let log = drain(&h);
         assert_eq!(log.len(), 3);
         assert!(matches!(
             log[0].origin,

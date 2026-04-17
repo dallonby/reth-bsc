@@ -44,7 +44,7 @@ pub mod storage;
 pub mod vm;
 mod worker;
 
-pub use db_wrapper::{DbError, DbWrapper};
+pub use db_wrapper::{new_read_log_handle, DbError, DbWrapper, ReadLogHandle};
 pub use error::{Error, Result};
 pub use executor::{Config, Output, ParallelExecutor, Stats, TxResult};
 pub use mv_memory::{
@@ -54,4 +54,4 @@ pub use read_set::{ReadLog, ReadLogBuilder, ReadOrigin, ReadSetStore};
 pub use scheduler::{Scheduler, Task};
 pub use status::{Phase, StatusVector, TxState};
 pub use storage::Storage;
-pub use vm::{TransactOutcome, TransactResult, VmBuilder};
+pub use vm::{TransactOutcome, VmBuilder};

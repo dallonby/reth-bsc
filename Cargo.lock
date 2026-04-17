@@ -9653,6 +9653,7 @@ dependencies = [
  "lru 0.12.5",
  "metrics",
  "once_cell",
+ "parallel-evm",
  "parity-bytes",
  "parking_lot",
  "pbkdf2 0.12.2",

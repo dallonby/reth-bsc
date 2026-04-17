@@ -7,7 +7,7 @@
 //! # fn example<VB: parallel_evm::VmBuilder, S: parallel_evm::Storage>(
 //! #     vm: VB, storage: &S,
 //! #     block_env: revm::context::BlockEnv,
-//! #     spec: revm::primitives::hardfork::SpecId,
+//! #     spec: VB::Spec,
 //! #     txs: Vec<VB::Tx>,
 //! # ) -> parallel_evm::Result<()> {
 //! let executor = ParallelExecutor::new(Config::default(), vm);
@@ -42,7 +42,6 @@ use crate::{
 use parking_lot::Mutex;
 use revm::{
     context::{result::ResultAndState, BlockEnv},
-    primitives::hardfork::SpecId,
 };
 use std::{
     sync::atomic::{AtomicU32, Ordering},
@@ -149,7 +148,7 @@ impl<VB: VmBuilder> ParallelExecutor<VB> {
         &self,
         storage: &S,
         block_env: BlockEnv,
-        spec_id: SpecId,
+        spec: VB::Spec,
         txs: Vec<VB::Tx>,
     ) -> Result<Output<VB::HaltReason>> {
         if self.config.workers == 0 {
@@ -168,7 +167,7 @@ impl<VB: VmBuilder> ParallelExecutor<VB> {
 
         // Short-circuit: tiny blocks run sequentially.
         if num_txs < self.config.min_txs_for_parallel {
-            return self.execute_sequential(storage, &block_env, spec_id, &txs);
+            return self.execute_sequential(storage, &block_env, &spec, &txs);
         }
 
         // Parallel path.
@@ -186,7 +185,7 @@ impl<VB: VmBuilder> ParallelExecutor<VB> {
             vm_builder: &self.vm_builder,
             storage,
             block_env: &block_env,
-            spec_id,
+            spec: &spec,
             txs: &txs,
             results: &results,
             reexec_counts: &reexec_counts,
@@ -237,17 +236,21 @@ impl<VB: VmBuilder> ParallelExecutor<VB> {
         &self,
         storage: &S,
         block_env: &BlockEnv,
-        spec_id: SpecId,
+        spec: &VB::Spec,
         txs: &[VB::Tx],
     ) -> Result<Output<VB::HaltReason>> {
-        use crate::{db_wrapper::DbWrapper, mv_memory::{MvMemory, Version}};
+        use crate::{
+            db_wrapper::{new_read_log_handle, DbWrapper},
+            mv_memory::{MvMemory, Version},
+        };
 
         let mv = MvMemory::new();
         let mut results = Vec::with_capacity(txs.len());
         for (idx, tx) in txs.iter().enumerate() {
-            let db = DbWrapper::new(storage, &mv, idx);
-            let tr = self.vm_builder.transact(db, block_env, spec_id, tx);
-            match tr.outcome {
+            let handle = new_read_log_handle();
+            let db = DbWrapper::new(storage, &mv, idx, handle);
+            let outcome = self.vm_builder.transact(db, block_env, spec, tx);
+            match outcome {
                 TransactOutcome::Completed { result_and_state } => {
                     // Write-through so tx idx+1 sees this tx's writes.
                     commit_writes_to_mv(

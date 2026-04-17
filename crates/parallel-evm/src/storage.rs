@@ -24,7 +24,12 @@ use alloy_primitives::{Address, B256, U256};
 use revm::{bytecode::Bytecode, state::AccountInfo};
 
 /// Read-only state access, implemented by the caller.
-pub trait Storage: Send + Sync {
+///
+/// `Debug` is required because `alloy-evm 0.30`'s `Database` trait has a
+/// `Debug` supertrait — the revm-derived block executor machinery needs
+/// it. The caller's `Storage` impl typically already derives `Debug`; if
+/// not, a minimal impl that prints the type name is fine.
+pub trait Storage: Send + Sync + std::fmt::Debug {
     /// Error type the implementor surfaces. Converted to a String at the
     /// `parallel-evm` boundary to keep [`crate::Error`] object-safe.
     type Error: std::error::Error + Send + Sync + 'static;

@@ -13,8 +13,7 @@
 
 use alloy_primitives::{address, Address, B256, U256};
 use parallel_evm::{
-    Config, DbError, DbWrapper, ParallelExecutor, Storage, TransactOutcome, TransactResult,
-    TxResult, VmBuilder,
+    Config, DbError, DbWrapper, ParallelExecutor, Storage, TransactOutcome, TxResult, VmBuilder,
 };
 use revm::{
     bytecode::Bytecode,
@@ -84,14 +83,15 @@ struct FakeVm;
 impl VmBuilder for FakeVm {
     type Tx = FakeTx;
     type HaltReason = ();
+    type Spec = SpecId;
 
     fn transact<S: Storage>(
         &self,
         mut db: DbWrapper<'_, S>,
         _block_env: &BlockEnv,
-        _spec_id: SpecId,
+        _spec: &Self::Spec,
         tx: &Self::Tx,
-    ) -> TransactResult<Self::HaltReason> {
+    ) -> TransactOutcome<Self::HaltReason> {
         // Perform all reads first. Any Blocked read short-circuits with
         // the partial read log discarded.
         for access in &tx.reads {
@@ -100,15 +100,9 @@ impl VmBuilder for FakeVm {
                 Access::Storage(addr, slot) => db.storage(*addr, *slot).map(|_| ()),
             };
             if let Err(DbError::Blocked { blocking_tx_idx }) = read_result {
-                return TransactResult {
-                    outcome: TransactOutcome::Blocked { blocking_tx_idx },
-                    reads: db.into_read_log(),
-                };
+                return TransactOutcome::Blocked { blocking_tx_idx };
             } else if let Err(e) = read_result {
-                return TransactResult {
-                    outcome: TransactOutcome::StorageError(e.to_string()),
-                    reads: db.into_read_log(),
-                };
+                return TransactOutcome::StorageError(e.to_string());
             }
         }
 
@@ -149,11 +143,8 @@ impl VmBuilder for FakeVm {
             logs: vec![],
             output: EvmOutput::Call(Bytes::new()),
         };
-        TransactResult {
-            outcome: TransactOutcome::Completed {
-                result_and_state: ResultAndState { result, state },
-            },
-            reads: db.into_read_log(),
+        TransactOutcome::Completed {
+            result_and_state: ResultAndState { result, state },
         }
     }
 }

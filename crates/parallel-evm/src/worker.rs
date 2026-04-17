@@ -19,7 +19,7 @@
 //! it alone.
 
 use crate::{
-    db_wrapper::DbWrapper,
+    db_wrapper::{new_read_log_handle, DbWrapper},
     error::Error,
     mv_memory::{MemoryLocation, MemoryValue, MvMemory, ReadOutcome, TxIdx, Version},
     read_set::{ReadLog, ReadOrigin},
@@ -30,7 +30,6 @@ use crate::{
 use parking_lot::Mutex;
 use revm::{
     context::{result::ResultAndState, BlockEnv},
-    primitives::hardfork::SpecId,
     state::{Account, EvmState},
 };
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -47,7 +46,7 @@ pub(crate) struct WorkerShared<'a, VB: VmBuilder, S: Storage> {
     pub vm_builder: &'a VB,
     pub storage: &'a S,
     pub block_env: &'a BlockEnv,
-    pub spec_id: SpecId,
+    pub spec: &'a VB::Spec,
     pub txs: &'a [VB::Tx],
     /// Per-tx `Mutex<Option<_>>`: slot for the final execution result. On
     /// re-execution, the slot is overwritten by the latest incarnation.
@@ -108,18 +107,28 @@ where
         return;
     }
 
-    let db = DbWrapper::new(shared.storage, shared.scheduler.mv_memory(), version.tx_idx);
-    let result = shared
+    // The read-log handle is owned by the worker — the VmBuilder only
+    // sees a clone via the DbWrapper. After the VM returns we extract the
+    // log through our handle, avoiding the need to recover the DbWrapper
+    // from inside whatever revm context the VmBuilder built.
+    let read_log_handle = new_read_log_handle();
+    let db = DbWrapper::new(
+        shared.storage,
+        shared.scheduler.mv_memory(),
+        version.tx_idx,
+        read_log_handle.clone(),
+    );
+    let outcome = shared
         .vm_builder
-        .transact(db, shared.block_env, shared.spec_id, &shared.txs[version.tx_idx]);
+        .transact(db, shared.block_env, shared.spec, &shared.txs[version.tx_idx]);
 
-    // Record read log (even partial) so validation can run. For
-    // Blocked outcomes the log is intentionally empty; storing an empty
-    // log is fine because the tx will re-execute before its read-set
-    // matters.
-    shared.scheduler.read_sets().replace(version.tx_idx, result.reads);
+    // Extract the read log (auto-populated via the shared handle during
+    // the VmBuilder's EVM execution). This is the validation source of
+    // truth; the VmBuilder contract is just "don't lose the handle".
+    let reads = std::mem::take(&mut *read_log_handle.lock());
+    shared.scheduler.read_sets().replace(version.tx_idx, reads);
 
-    match result.outcome {
+    match outcome {
         TransactOutcome::Completed { result_and_state } => {
             // Push writes into MvMemory, then install the write set.
             let write_locations = commit_writes_to_mv(

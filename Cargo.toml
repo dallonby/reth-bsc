@@ -95,6 +95,7 @@ reth-trie-common = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
 reth-tasks = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth.git", tag = "v2.0.0" }
+parallel-evm = { path = "crates/parallel-evm" }
 # Versions pinned to match paradigmxyz/reth v2.0.0 workspace.
 revm = "36.0.0"
 revm-context-interface = "17.0.0"
