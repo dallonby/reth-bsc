@@ -37,19 +37,46 @@
 //! `ParallelExecutor` dispatch. Done in order because step 1 is the
 //! actual blocker:
 //!
-//! 1. **Bound propagation.** `ParallelExecutor::execute` takes a
-//!    `&impl Storage`, and the only way to build a `Storage` over
-//!    `self.evm.db()` without snapshotting/cloning is via
-//!    [`RefStorage<'_, DB>`] which needs `DB: DatabaseRef + Send + Sync`.
-//!    The current `BlockExecutor` impl bound is just
-//!    `E::DB: alloy_evm::block::StateDB`, so tightening it ripples
-//!    through `BscBlockBuilder`, `BscBlockAssembler`, and the miner's
-//!    `BscBlockExecutorFactory` call sites — all of which hold
-//!    `&'a mut State<DB>` today with only a `reth_evm::Database` bound
-//!    on `DB`. The miner path will never hit the parallel branch
-//!    (ctx.parallel = false for miner/live) but still has to satisfy
-//!    the impl's bounds. Tightening those bounds (and the upstream
-//!    propagation) is a small multi-file refactor in its own right.
+//! 1. **Trait-bound wall.** Attempted in this session: tightening
+//!    `E::DB: DatabaseRef + Send + Sync` on the `BlockExecutor` impl
+//!    and propagating through `ConfigureEvm::create_executor` /
+//!    `create_block_builder`. The propagation fails with E0276: reth's
+//!    `ConfigureEvm` trait fixes `DB: StateDB + 'a` on
+//!    `create_executor`, so our impl cannot add stricter bounds without
+//!    modifying reth itself. The rollback is in git history.
+//!
+//!    Consequence: `ParallelExecutor` cannot be called with
+//!    `RefStorage::new(self.evm.db())` from inside
+//!    `BlockExecutor::execute_block`, because we have no way to assert
+//!    `E::DB: DatabaseRef` at that call site.
+//!
+//!    Two viable strategies for the next session:
+//!
+//!    - **(a) Pipeline-level parallel pre-execution.** Hook in at a
+//!      higher layer that already holds a state-provider handle (which
+//!      *is* `DatabaseRef + Send + Sync` by construction). Before
+//!      `execute_block` is invoked by the pipeline, run user txs in
+//!      parallel against a forked snapshot of the parent state, stash
+//!      the per-tx `ResultAndState`s in a new shared-ctx field, and
+//!      have `BscBlockExecutor::execute_transaction_with_result_closure`
+//!      commit the precomputed result instead of calling
+//!      `self.evm.transact(...)`. Correctness caveat: if
+//!      `apply_pre_execution_changes` writes (Feynman contract
+//!      upgrades, Prague blockhash storage), the parent snapshot is
+//!      stale — either apply those writes to the snapshot first or
+//!      force serial for those blocks.
+//!
+//!    - **(b) Parallel-specific wrapper executor.** Add a
+//!      `create_parallel_executor` method on `BscEvmConfig` (not on the
+//!      `ConfigureEvm` trait — a fresh inherent method) returning a
+//!      `BscParallelBlockExecutor<'a, DB, Spec, R>` wrapper with the
+//!      stricter `DB: DatabaseRef + Send + Sync` bound. Pipeline code
+//!      that knows the concrete DB picks between the two. Intrusive at
+//!      the launch site but keeps the parallel logic co-located in this
+//!      crate.
+//!
+//!    (a) is architecturally cleaner and less invasive; (b) is more
+//!    local and easier to revert.
 //! 2. In the parallel branch, collect txs into `Vec<(BscTxEnv,
 //!    Recovered<TransactionSigned>)>`. `BscTxEnv::from_recovered_tx` is
 //!    already available; the Recovered form is rebuilt from the
