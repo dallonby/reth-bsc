@@ -35,8 +35,14 @@
 
 pub mod error;
 pub mod mv_memory;
+pub mod read_set;
+pub mod scheduler;
+pub mod status;
 
 pub use error::{Error, Result};
 pub use mv_memory::{
     Incarnation, MemoryEntry, MemoryLocation, MemoryValue, MvMemory, ReadOutcome, TxIdx, Version,
 };
+pub use read_set::{ReadLog, ReadLogBuilder, ReadOrigin, ReadSetStore};
+pub use scheduler::{Scheduler, Task};
+pub use status::{Phase, StatusVector, TxState};
