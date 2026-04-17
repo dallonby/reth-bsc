@@ -111,16 +111,29 @@ impl<DB: Database> BscBatchExecutor<DB> {
     ///    system-contract upgrades at block begin and Prague's
     ///    `apply_blockhashes_contract_call` — both of which write to
     ///    the state's cache/transitions.
-    /// 3. Merge transitions into the bundle. This is the critical
-    ///    step for parallel correctness: without it, the snapshot in
-    ///    step 4 would NOT reflect any pre-exec writes, and parallel
-    ///    workers would read pre-patch state for any contract the
-    ///    current block's pre-exec upgraded.
-    /// 4. Snapshot the bundle state.
-    /// 5. Dispatch `execute_block_parallel(spawner, snapshot, txs)`,
+    /// 3. Build a throwaway `bundle_snapshot` that reflects
+    ///    `state.bundle_state` PLUS the pre-exec transitions. We do
+    ///    NOT merge transitions into the real `state.bundle_state`
+    ///    here — that would push an extra revert entry onto
+    ///    `bundle_state.reverts` for this block, and a SECOND revert
+    ///    gets pushed when `execute_one` does its end-of-block merge.
+    ///    Two reverts per block desyncs the {block_index → block_number}
+    ///    mapping that reth's `write_state_reverts` relies on (it
+    ///    assumes one revert entry per block), which manifests as an
+    ///    `MDBX_EKEYMISMATCH` on `StorageChangeSets` at batch flush.
+    ///
+    ///    Instead, clone the bundle, clone the pending
+    ///    `transition_state`, and fold the latter into the clone with
+    ///    `BundleRetention::PlainState` (no reverts tracked on the
+    ///    snapshot — it's throwaway).
+    /// 4. Dispatch `execute_block_parallel(spawner, snapshot, txs)`,
     ///    which runs the tx phase in parallel, commits serially, and
     ///    finishes with post-exec (system txs, validator rewards,
-    ///    etc.) on the main thread.
+    ///    etc.) on the main thread. All those writes land in
+    ///    `state.transition_state` on top of the pre-exec ones. The
+    ///    caller (`execute_one`) then calls `merge_transitions` ONCE,
+    ///    which folds everything into `bundle_state` with a SINGLE
+    ///    revert entry — matching reth's write invariant.
     fn try_execute_one_parallel(
         &mut self,
         block: &RecoveredBlock<<BscPrimitives as NodePrimitives>::Block>,
@@ -144,26 +157,26 @@ impl<DB: Database> BscBatchExecutor<DB> {
             .create_executor(evm, ctx);
 
         // Step 2: run pre-execution changes on the executor. Writes
-        // land in `self.state` (through the `&mut` inside `evm`).
+        // land in `self.state.transition_state` (through the `&mut`
+        // inside `evm`). We deliberately do NOT merge them into
+        // `state.bundle_state` — see the one-revert-per-block
+        // invariant called out in the step 3 comment above.
         executor.apply_pre_execution_changes()?;
 
-        // Step 3: fold pre-exec writes into the bundle. Without this,
-        // the snapshot in step 4 would miss them.
-        //
-        // We can't call `self.state.merge_transitions(...)` here
-        // because `self.state` is borrowed mutably through `executor.evm`.
-        // Instead, go through the executor's `db_mut` which returns
-        // the same `&mut State<DB>`.
-        executor
-            .evm_mut()
-            .db_mut()
-            .merge_transitions(BundleRetention::Reverts);
+        // Step 3: build the throwaway snapshot. Clone the bundle and
+        // the pending transitions, then fold the latter into the
+        // clone. `PlainState` retention keeps the snapshot's reverts
+        // Vec untouched (still fine if it gains an empty entry — the
+        // snapshot is discarded once workers finish).
+        let mut bundle_snapshot = executor.evm().db().bundle_state.clone();
+        if let Some(pre_exec_transitions) = executor.evm().db().transition_state.clone() {
+            bundle_snapshot.apply_transitions_and_create_reverts(
+                pre_exec_transitions,
+                BundleRetention::PlainState,
+            );
+        }
 
-        // Step 4: snapshot. This IS a deep clone of BundleState; see
-        // the cost-model note in this module's docs.
-        let bundle_snapshot = executor.evm().db().bundle_state.clone();
-
-        // Step 5: run user/system tx phase in parallel + post-exec.
+        // Step 4: run user/system tx phase in parallel + post-exec.
         executor.execute_block_parallel(
             &**spawner,
             &bundle_snapshot,
