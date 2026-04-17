@@ -30,6 +30,7 @@ use revm::{
 use revm::context_interface::journaled_state::account::JournaledAccountTr;
 
 mod assembler;
+pub mod batch;
 mod builder;
 pub mod config;
 pub use config::{BscBlockExecutionCtx, BscBlockExecutorFactory, BscEvmConfig};

@@ -499,6 +499,34 @@ where
             parent,
         )
     }
+
+    // Override `batch_executor` to return our BSC-specific wrapper. The
+    // wrapper intercepts `execute_one` per block to branch into the
+    // parallel-evm path when `--bsc.parallel-execute` is on; otherwise
+    // it mirrors `BasicBlockExecutor` verbatim. Reth's `ExecutionStage`
+    // calls `batch_executor(db)` once per batch and drives `execute_one`
+    // per block, so this single override is all that's needed to wire
+    // parallel execution into pipeline sync.
+    //
+    // Note: `executor(db)` keeps the default (non-batch) impl. That
+    // path is used for one-off single-block executions (e.g.
+    // speculative prefetch workers) where the parallel overhead isn't
+    // amortized; routing those through the parallel path would be
+    // strictly worse.
+    fn batch_executor<DB>(
+        &self,
+        db: DB,
+    ) -> impl reth_evm::execute::Executor<
+        DB,
+        Primitives = Self::Primitives,
+        Error = reth_evm::execute::BlockExecutionError,
+    >
+    where
+        DB: Database,
+        <DB as revm::Database>::Error: Send + Sync + 'static,
+    {
+        super::batch::BscBatchExecutor::new(self.clone(), db)
+    }
 }
 
 impl ConfigureEngineEvm<BscExecutionData> for BscEvmConfig

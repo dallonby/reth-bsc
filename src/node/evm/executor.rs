@@ -439,26 +439,42 @@ where
     ///
     /// # Caller contract
     ///
-    /// `bundle_snapshot` must reflect state up to the **parent** block's
-    /// end-of-batch bundle (NOT the current block's pre-execution
-    /// mutations, which the bundle doesn't see). In pipeline sync, the
-    /// caller (a future `BscParallelExecutionStage`) holds
-    /// `&mut State<DB>` at the pipeline level and can snapshot
-    /// `state.bundle_state` immediately before the per-block executor
-    /// is constructed.
+    /// # Caller contract
     ///
-    /// `factory` is typically the node's `ProviderFactory<N>` clone —
-    /// Send+Sync by construction. Per-worker `factory.latest()` calls
-    /// produce a fresh `StateProviderBox` per read, which keeps the non-
-    /// Sync MDBX tx contained to a single thread.
-    pub fn execute_block_parallel<F>(
+    /// **The caller is responsible for `apply_pre_execution_changes`.**
+    /// This method SKIPS pre-exec so the caller can fold any pre-exec
+    /// writes (system-contract upgrades, Prague history-storage
+    /// contract deployment, `apply_blockhashes_contract_call`) into
+    /// the bundle BEFORE taking the snapshot. If pre-exec wrote
+    /// something that a user tx later reads — think: a system-contract
+    /// upgrade whose new bytecode is called by a user tx in the same
+    /// block — parallel workers would miss it through a pre-pre-exec
+    /// snapshot and diverge.
+    ///
+    /// The canonical caller sequence is:
+    /// ```ignore
+    /// executor.apply_pre_execution_changes()?;
+    /// state.merge_transitions(BundleRetention::Reverts);
+    /// let snapshot = state.bundle_state.clone();
+    /// executor.execute_block_parallel(&spawner, &snapshot, txs)?;
+    /// ```
+    ///
+    /// `bundle_snapshot` thus reflects state up to and including the
+    /// current block's pre-exec mutations, plus all in-batch commits
+    /// from earlier blocks.
+    ///
+    /// `spawner` is typically the node's `ProviderFactory<N>` clone —
+    /// Send+Sync by construction. Per-worker `spawner.spawn_state()`
+    /// calls produce a fresh `StateProviderBox` per read, which keeps
+    /// the non-Sync MDBX tx contained to a single thread.
+    pub fn execute_block_parallel<S>(
         mut self,
-        factory: &F,
+        spawner: &S,
         bundle_snapshot: &revm::database::BundleState,
         transactions: impl IntoIterator<Item = impl ExecutableTx<Self>>,
     ) -> Result<BlockExecutionResult<R::Receipt>, BlockExecutionError>
     where
-        F: reth_provider::StateProviderFactory + Send + Sync,
+        S: super::parallel::ParallelStateSpawner + ?Sized,
         Spec: std::fmt::Debug + Send + Sync,
         // The parallel executor produces revm's `HaltReason`; pin the EVM's
         // own HaltReason to match so the results type-check when fed into
@@ -472,7 +488,8 @@ where
         use parallel_evm::{Config as ParallelConfig, ParallelExecutor};
         use reth_primitives_traits::Recovered;
 
-        self.apply_pre_execution_changes()?;
+        // NOTE: `apply_pre_execution_changes` is the CALLER's
+        // responsibility. See method doc above for the rationale.
 
         let beneficiary = self.evm.block().beneficiary();
         let block_env = self.evm.block().clone();
@@ -571,7 +588,7 @@ where
         // it through the CLI.
         let vm_builder = BscVmBuilder::new(self.spec.clone());
         let parallel = ParallelExecutor::new(ParallelConfig::default(), vm_builder);
-        let layered = LayeredStorage::new(bundle_snapshot, factory);
+        let layered = LayeredStorage::new(bundle_snapshot, spawner);
 
         let output = match parallel.execute(
             &layered,
@@ -1056,38 +1073,15 @@ where
         &self.receipts
     }
 
-    fn execute_block(
-        mut self,
-        transactions: impl IntoIterator<Item = impl ExecutableTx<Self>>,
-    ) -> Result<BlockExecutionResult<Self::Receipt>, BlockExecutionError>
-    where
-        Self: Sized,
-    {
-        self.apply_pre_execution_changes()?;
-
-        // Parallel-branch scaffold. When `--bsc.parallel-execute` is on for a
-        // full (non-speculative, non-miner) block, materialise the tx slice
-        // and report it; this is the hook-point where `ParallelExecutor`
-        // will slot in. Until the serial-commit phase lands, we still run
-        // the stock per-tx loop below so behaviour is byte-identical to the
-        // flag-off case.
-        if self.ctx.parallel {
-            let txs: Vec<_> = transactions.into_iter().collect();
-            tracing::debug!(
-                target: "bsc::executor::parallel",
-                block_number = self.evm.block().number().to::<u64>(),
-                num_txs = txs.len(),
-                "execute_block hit parallel branch (scaffold — serial fallback)"
-            );
-            for tx in txs {
-                self.execute_transaction(tx)?;
-            }
-        } else {
-            for tx in transactions {
-                self.execute_transaction(tx)?;
-            }
-        }
-
-        self.apply_post_execution_changes()
-    }
+    // NOTE: the `ctx.parallel` dispatch does NOT happen here. Reth's
+    // `ExecutionStage` drives execution through
+    // `ConfigureEvm::batch_executor(db).execute_one(&block)`, which
+    // lands in `BscBatchExecutor::execute_one` — that's where the
+    // parallel branch lives (needs per-block access to the
+    // accumulating `State<DB>`'s bundle_state, which is unavailable
+    // inside this `BlockExecutor` trait method). Production sync paths
+    // therefore reach parallel execution via BscBatchExecutor; direct
+    // callers of `BscBlockExecutor::execute_block` (none in-tree today)
+    // stay purely serial. The default `execute_block` supplied by the
+    // trait is sufficient.
 }

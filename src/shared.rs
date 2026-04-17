@@ -89,6 +89,47 @@ pub fn is_parallel_execute_enabled() -> bool {
     PARALLEL_EXECUTE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Global state-provider spawner used by the parallel execution path.
+///
+/// Stashed here (not on `BscEvmConfig`) because reth's `ExecutionStage`
+/// constructs executors via `ConfigureEvm::batch_executor(db)` which
+/// only hands us `DB: Database` — there's no way to thread a
+/// `ProviderFactory` through that trait-bounded surface. The node sets
+/// this from `ctx.provider().clone()` in its `on_component_initialized`
+/// hook, before the pipeline ever starts.
+///
+/// Using a global keeps the `batch_executor` return type unchanged and
+/// keeps BscEvmConfig free of a life-cycle-coupled factory field. One
+/// provider-per-node (which reth already enforces architecturally) is
+/// fine for this use.
+static PARALLEL_STATE_SPAWNER: OnceLock<
+    Arc<dyn crate::node::evm::parallel::ParallelStateSpawner + Send + Sync + 'static>,
+> = OnceLock::new();
+
+/// Register a `ParallelStateSpawner` for the parallel execution path to
+/// spawn per-worker `StateProviderBox` instances. Idempotent: silently
+/// ignores re-registration attempts (same pattern as the other `OnceLock`
+/// providers above).
+pub fn set_parallel_state_spawner<S>(spawner: Arc<S>)
+where
+    S: crate::node::evm::parallel::ParallelStateSpawner + Send + Sync + 'static,
+{
+    // `Arc<S>` coerces to `Arc<dyn ParallelStateSpawner + Send + Sync>`
+    // once we spell the target explicitly.
+    let erased: Arc<
+        dyn crate::node::evm::parallel::ParallelStateSpawner + Send + Sync + 'static,
+    > = spawner;
+    let _ = PARALLEL_STATE_SPAWNER.set(erased);
+}
+
+/// Read the globally-registered parallel state spawner. Returns
+/// `Some` once the node has initialized components; `None` before.
+pub fn get_parallel_state_spawner(
+) -> Option<&'static Arc<dyn crate::node::evm::parallel::ParallelStateSpawner + Send + Sync + 'static>>
+{
+    PARALLEL_STATE_SPAWNER.get()
+}
+
 /// Global payload events broadcast sender
 static PAYLOAD_EVENTS_TX: OnceLock<broadcast::Sender<Events<BscPayloadTypes>>> = OnceLock::new();
 /// Broadcast channel for notifying about successfully imported block hashes

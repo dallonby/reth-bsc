@@ -313,8 +313,37 @@ where
     }
 }
 
+/// Abstracts the "spawn a fresh per-worker state provider" operation so
+/// [`LayeredStorage`] can carry a trait object.
+///
+/// Any `StateProviderFactory + Send + Sync` satisfies this via the
+/// blanket impl. The indirection exists because we stash a concrete
+/// factory in a global (see `crate::shared::set_parallel_state_spawner`)
+/// and want to avoid propagating a generic parameter through
+/// [`crate::node::evm::executor::BscBlockExecutor::execute_block_parallel`]
+/// down to every caller in the stage pipeline.
+pub trait ParallelStateSpawner: Send + Sync {
+    /// Spawn a fresh `StateProviderBox` for a worker thread. The
+    /// returned provider is `Send`-only (MDBX txs are never `Sync`);
+    /// the caller is responsible for keeping it on a single thread.
+    fn spawn_state(
+        &self,
+    ) -> reth_provider::ProviderResult<reth_provider::StateProviderBox>;
+}
+
+impl<F> ParallelStateSpawner for F
+where
+    F: StateProviderFactory + Send + Sync + ?Sized,
+{
+    fn spawn_state(
+        &self,
+    ) -> reth_provider::ProviderResult<reth_provider::StateProviderBox> {
+        self.latest()
+    }
+}
+
 /// `parallel_evm::Storage` adapter that layers an immutable `BundleState`
-/// snapshot over a Send+Sync `StateProviderFactory`.
+/// snapshot over a Send+Sync state-provider spawner.
 ///
 /// # Why not `ConsistentDbView` or a plain `&DB: DatabaseRef`
 ///
@@ -322,13 +351,14 @@ where
 ///   `provider_ro()` performs a tip-consistency check that fails with
 ///   `ConsistentViewError::Syncing` during pipeline staged-sync — the
 ///   very path where parallel execution needs to run. So we bind on
-///   `StateProviderFactory` directly and accept that live-sync callers
-///   would add their own consistency layer on top if needed.
+///   [`ParallelStateSpawner`] (blanket-impl'd for `StateProviderFactory`)
+///   directly and accept that live-sync callers would add their own
+///   consistency layer on top if needed.
 /// - `&DB: DatabaseRef` (what `RefStorage` uses) fails at the production
 ///   monomorphization because reth's `StateProviderDatabase<LatestStateProviderRef
 ///   <'_, DatabaseProvider<TX>>>` can't be `Sync` — MDBX txs are Send-only
 ///   by design. The factory-based approach sidesteps this: each worker
-///   calls `factory.latest()` from its own thread to get a fresh
+///   calls `spawner.spawn_state()` from its own thread to get a fresh
 ///   `StateProviderBox`, which only needs `Send`.
 ///
 /// # Layered read pattern
@@ -339,39 +369,40 @@ where
 ///    would miss every intra-batch change. The caller snapshots
 ///    `State<DB>::bundle_state` immutably before calling
 ///    `execute_block_parallel` and passes it here as `bundle_snapshot`.
-/// 2. **StateProvider fallback** (`factory.latest()`): for any read the
-///    bundle doesn't answer, spawn a fresh per-worker state provider and
-///    delegate.
+/// 2. **StateProvider fallback** (`spawner.spawn_state()`): for any read
+///    the bundle doesn't answer, spawn a fresh per-worker state provider
+///    and delegate.
 ///
-/// # Cost model (Phase 1)
+/// # Cost model (Phase 2)
 ///
-/// Phase 1 spawns a fresh `StateProviderBox` on EVERY fallback read.
-/// That's one MDBX tx + trait-object boxing per non-bundle read. This is
-/// painful for perf but trivially correct. Phase 2 will add a
-/// `ThreadLocal<RefCell<Option<StateProviderBox>>>` so each worker thread
-/// spawns at most one provider per `execute_block_parallel` invocation.
+/// Phase 2 spawns a fresh `StateProviderBox` on EVERY fallback read.
+/// That's one MDBX tx + trait-object boxing per non-bundle read. This
+/// is painful for perf but trivially correct. Phase 3 optimization slot:
+/// add a `ThreadLocal<RefCell<Option<StateProviderBox>>>` so each worker
+/// thread spawns at most one provider per `execute_block_parallel`
+/// invocation.
 ///
 /// # Lifetime contract
 ///
 /// The `'a` lifetime binds both borrows to a single
 /// `execute_block_parallel` call. `ParallelExecutor::execute` uses scoped
 /// threads that join before return, so the borrows are safely bounded.
-pub struct LayeredStorage<'a, F> {
+pub struct LayeredStorage<'a, S: ?Sized> {
     /// Immutable snapshot of in-batch committed state.
     bundle: &'a BundleState,
-    /// Factory for spawning per-worker state providers.
-    factory: &'a F,
+    /// Factory-equivalent for spawning per-worker state providers.
+    spawner: &'a S,
 }
 
-impl<'a, F> LayeredStorage<'a, F> {
+impl<'a, S: ?Sized> LayeredStorage<'a, S> {
     /// Construct a new layered storage over the given bundle snapshot and
-    /// factory reference.
-    pub const fn new(bundle: &'a BundleState, factory: &'a F) -> Self {
-        Self { bundle, factory }
+    /// spawner reference.
+    pub const fn new(bundle: &'a BundleState, spawner: &'a S) -> Self {
+        Self { bundle, spawner }
     }
 }
 
-impl<'a, F> std::fmt::Debug for LayeredStorage<'a, F> {
+impl<'a, S: ?Sized> std::fmt::Debug for LayeredStorage<'a, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LayeredStorage")
             .field("bundle_accounts", &self.bundle.state().len())
@@ -380,9 +411,9 @@ impl<'a, F> std::fmt::Debug for LayeredStorage<'a, F> {
     }
 }
 
-impl<'a, F> Storage for LayeredStorage<'a, F>
+impl<'a, S: ?Sized> Storage for LayeredStorage<'a, S>
 where
-    F: StateProviderFactory + Send + Sync,
+    S: ParallelStateSpawner,
 {
     type Error = ProviderError;
 
@@ -401,7 +432,7 @@ where
         }
 
         // Layer 2: spawn a per-call state provider and read through.
-        let sp = self.factory.latest()?;
+        let sp = self.spawner.spawn_state()?;
         let Some(acct) = sp.basic_account(&address)? else {
             return Ok(None);
         };
@@ -429,7 +460,7 @@ where
         // real bug (e.g. tx references a code hash we've never observed);
         // surface as an error so the parallel phase aborts and the caller
         // falls back to serial for this block.
-        let sp = self.factory.latest()?;
+        let sp = self.spawner.spawn_state()?;
         // reth wraps revm's `Bytecode` in its own newtype for codec
         // reasons; unwrap via the public `.0` field.
         sp.bytecode_by_hash(&code_hash)?
@@ -454,14 +485,14 @@ where
         }
 
         // Layer 2: DB.
-        let sp = self.factory.latest()?;
+        let sp = self.spawner.spawn_state()?;
         Ok(sp.storage(address, B256::from(slot))?.unwrap_or(U256::ZERO))
     }
 
     fn block_hash(&self, number: u64) -> Result<B256, Self::Error> {
         // Block hashes are not layered by bundle state — always go to DB.
         // EVM semantics: unknown blocks read as zero.
-        let sp = self.factory.latest()?;
+        let sp = self.spawner.spawn_state()?;
         Ok(sp.block_hash(number)?.unwrap_or(B256::ZERO))
     }
 }

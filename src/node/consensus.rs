@@ -65,6 +65,16 @@ where
         crate::shared::set_header_provider(Arc::new(ctx.provider().clone()))
             .unwrap_or_else(|e| panic!("Failed to set global header provider: {e}"));
 
+        // Register the state-provider spawner used by the parallel-evm
+        // block executor's per-worker layered reads. `ctx.provider()`
+        // is Send+Sync+Clone+'static (FullProvider supertraits), and
+        // implements `StateProviderFactory` so the blanket
+        // `ParallelStateSpawner` impl covers it. Registration is
+        // idempotent (OnceLock); set here regardless of the
+        // `--bsc.parallel-execute` flag so a runtime toggle (if we
+        // ever add one) can flip without re-initializing globals.
+        crate::shared::set_parallel_state_spawner(Arc::new(ctx.provider().clone()));
+
         // Seed the TD accumulator with genesis now that the canonical header
         // lookup is wired up. No-op if genesis TD is already persisted.
         crate::consensus::parlia::td_store::TdStore::seed_genesis();
