@@ -16,7 +16,7 @@ use reth_chainspec::{ChainSpec, EthChainSpec};
 use reth_ethereum_forks::Hardforks;
 use reth_ethereum_primitives::{Transaction, TransactionSigned};
 use revm::state::Bytecode;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
 use thiserror::Error;
 use tracing::info;
 
@@ -24,38 +24,50 @@ mod abi;
 mod embedded_contracts;
 pub mod feynman_fork;
 
+// Parse each BSC system-contract ABI exactly once at first use, then reuse the
+// parsed `JsonAbi` for the rest of the process.
+//
+// This is a major hot-path fix: `BscEvmConfig::create_executor` is called for
+// every block during Execution, and the previous `SystemContract::new` parsed
+// all four ABI JSON blobs (validator, validator-before-luban, slash, stake_hub)
+// via `serde_json::from_str` on every call. `STAKE_HUB_ABI` alone is large.
+// A profiling capture on the Execution stage showed ~25% of total CPU in
+// `serde_json` / `alloy_json_abi::JsonAbi::insert_item` / `validate_fields`.
+// Moving to `LazyLock` drops that to a single up-front parse at startup.
+pub(crate) static VALIDATOR_ABI_BEFORE_LUBAN_PARSED: LazyLock<JsonAbi> = LazyLock::new(|| {
+    serde_json::from_str(*VALIDATOR_SET_ABI_BEFORE_LUBAN)
+        .expect("VALIDATOR_SET_ABI_BEFORE_LUBAN must be valid JSON")
+});
+pub(crate) static VALIDATOR_ABI_PARSED: LazyLock<JsonAbi> = LazyLock::new(|| {
+    serde_json::from_str(*VALIDATOR_SET_ABI).expect("VALIDATOR_SET_ABI must be valid JSON")
+});
+pub(crate) static SLASH_ABI_PARSED: LazyLock<JsonAbi> = LazyLock::new(|| {
+    serde_json::from_str(*SLASH_INDICATOR_ABI).expect("SLASH_INDICATOR_ABI must be valid JSON")
+});
+pub(crate) static STAKE_HUB_ABI_PARSED: LazyLock<JsonAbi> = LazyLock::new(|| {
+    serde_json::from_str(*STAKE_HUB_ABI).expect("STAKE_HUB_ABI must be valid JSON")
+});
+
 pub(crate) struct SystemContract<Spec: EthChainSpec> {
-    /// The validator set abi before luban.
-    validator_abi_before_luban: JsonAbi,
-    /// The validator contract abi.
-    validator_abi: JsonAbi,
-    /// The slash abi.
-    slash_abi: JsonAbi,
-    /// The stake hub abi.
-    stake_hub_abi: JsonAbi,
     /// The chain spec.
     chain_spec: Spec,
 }
 
 impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     pub(crate) fn new(chain_spec: Spec) -> Self {
-        let validator_abi_before_luban = serde_json::from_str(*VALIDATOR_SET_ABI_BEFORE_LUBAN).unwrap();
-        let validator_abi = serde_json::from_str(*VALIDATOR_SET_ABI).unwrap();
-        let slash_abi = serde_json::from_str(*SLASH_INDICATOR_ABI).unwrap();
-        let stake_hub_abi = serde_json::from_str(*STAKE_HUB_ABI).unwrap();
-        Self { validator_abi_before_luban, validator_abi, slash_abi, stake_hub_abi, chain_spec }
+        Self { chain_spec }
     }
 
     /// Return system address and input which is used to query current validators before luban.
     pub fn get_current_validators_before_luban(&self, block_number: BlockNumber) -> (Address, Bytes) {
         let function = if self.chain_spec.is_euler_active_at_block(block_number) {
-            self.validator_abi_before_luban
+            VALIDATOR_ABI_BEFORE_LUBAN_PARSED
                 .function("getMiningValidators")
                 .unwrap()
                 .first()
                 .unwrap()
         } else {
-            self.validator_abi_before_luban.function("getValidators").unwrap().first().unwrap()
+            VALIDATOR_ABI_BEFORE_LUBAN_PARSED.function("getValidators").unwrap().first().unwrap()
         };
         (VALIDATOR_CONTRACT, Bytes::from(function.abi_encode_input(&[]).unwrap()))
     }
@@ -63,7 +75,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     /// Unpack the data into validator set before luban.
     pub fn unpack_data_into_validator_set_before_luban(&self, data: &[u8]) -> Vec<Address> {
         let function =
-            self.validator_abi_before_luban.function("getValidators").unwrap().first().unwrap();
+            VALIDATOR_ABI_BEFORE_LUBAN_PARSED.function("getValidators").unwrap().first().unwrap();
         let output = function.abi_decode_output(data).unwrap();
 
         output
@@ -78,13 +90,13 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
 
     /// Return system address and input which is used to query current validators.
     pub fn get_current_validators(&self) -> (Address, Bytes) {
-        let function = self.validator_abi.function("getMiningValidators").unwrap().first().unwrap();
+        let function = VALIDATOR_ABI_PARSED.function("getMiningValidators").unwrap().first().unwrap();
         (VALIDATOR_CONTRACT, Bytes::from(function.abi_encode_input(&[]).unwrap()))
     }
 
     /// Unpack the data into validator set.
     pub fn unpack_data_into_validator_set(&self, data: &[u8]) -> (Vec<Address>, Vec<VoteAddress>) {
-        let function = self.validator_abi.function("getMiningValidators").unwrap().first().unwrap();
+        let function = VALIDATOR_ABI_PARSED.function("getMiningValidators").unwrap().first().unwrap();
         let output = function.abi_decode_output(data).unwrap();
 
         let consensus_addresses =
@@ -108,7 +120,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     /// Return system address and input which is used to query max elected validators.
     pub fn get_max_elected_validators(&self) -> (Address, Bytes) {
         let function =
-            self.stake_hub_abi.function("maxElectedValidators").unwrap().first().unwrap();
+            STAKE_HUB_ABI_PARSED.function("maxElectedValidators").unwrap().first().unwrap();
 
         (STAKE_HUB_CONTRACT, Bytes::from(function.abi_encode_input(&[]).unwrap()))
     }
@@ -116,7 +128,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     /// Unpack the data into max elected validators.
     pub fn unpack_data_into_max_elected_validators(&self, data: &[u8]) -> U256 {
         let function =
-            self.stake_hub_abi.function("maxElectedValidators").unwrap().first().unwrap();
+            STAKE_HUB_ABI_PARSED.function("maxElectedValidators").unwrap().first().unwrap();
         let output = function.abi_decode_output(data).unwrap();
 
         output[0].as_uint().unwrap().0
@@ -131,7 +143,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     /// Offset and limit follow the StakeHub contract's semantics.
     pub fn get_validator_election_info_with(&self, offset: U256, limit: U256) -> (Address, Bytes) {
         let function =
-            self.stake_hub_abi.function("getValidatorElectionInfo").unwrap().first().unwrap();
+            STAKE_HUB_ABI_PARSED.function("getValidatorElectionInfo").unwrap().first().unwrap();
         (
             STAKE_HUB_CONTRACT,
             Bytes::from(
@@ -151,7 +163,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
         data: &[u8],
     ) -> (Vec<Address>, Vec<U256>, Vec<Vec<u8>>, U256) {
         let function =
-            self.stake_hub_abi.function("getValidatorElectionInfo").unwrap().first().unwrap();
+            STAKE_HUB_ABI_PARSED.function("getValidatorElectionInfo").unwrap().first().unwrap();
         let output = function.abi_decode_output(data).unwrap();
 
         let consensus_address =
@@ -171,14 +183,14 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
 
     /// Return system address and input which is used to query turn length.
     pub fn get_turn_length(&self) -> (Address, Bytes) {
-        let function = self.validator_abi.function("getTurnLength").unwrap().first().unwrap();
+        let function = VALIDATOR_ABI_PARSED.function("getTurnLength").unwrap().first().unwrap();
 
         (VALIDATOR_CONTRACT, Bytes::from(function.abi_encode_input(&[]).unwrap()))
     }
 
     /// Unpack the data into turn length.
     pub fn unpack_data_into_turn_length(&self, data: &[u8]) -> U256 {
-        let function = self.validator_abi.function("getTurnLength").unwrap().first().unwrap();
+        let function = VALIDATOR_ABI_PARSED.function("getTurnLength").unwrap().first().unwrap();
         let output = function.abi_decode_output(data).unwrap();
 
         output[0].as_uint().unwrap().0
@@ -187,7 +199,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     /// Return system address and input to query validator NodeIDs from StakeHub.
     /// Note: This function should only be called after Maxwell hardfork when StakeHub.getNodeIDs is available.
     pub fn get_node_ids(&self, validators: Vec<Address>) -> (Address, Bytes) {
-        let function = self.stake_hub_abi.function("getNodeIDs").unwrap().first().unwrap();
+        let function = STAKE_HUB_ABI_PARSED.function("getNodeIDs").unwrap().first().unwrap();
         let vals = validators.into_iter().map(DynSolValue::from).collect::<Vec<_>>();
         let input = function.abi_encode_input(&[DynSolValue::Array(vals)]).unwrap();
         (STAKE_HUB_CONTRACT, Bytes::from(input))
@@ -196,7 +208,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     /// Unpack the data into (consensusAddresses, nodeIDsList)
     /// Note: This function should only be called after Maxwell hardfork when StakeHub.getNodeIDs is available.
     pub fn unpack_data_into_node_ids(&self, data: &[u8]) -> (Vec<Address>, Vec<Vec<[u8; 32]>>) {
-        let function = self.stake_hub_abi.function("getNodeIDs").unwrap().first().unwrap();
+        let function = STAKE_HUB_ABI_PARSED.function("getNodeIDs").unwrap().first().unwrap();
         let output = function.abi_decode_output(data).unwrap();
 
         let consensus_addresses = output[0]
@@ -229,7 +241,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
 
     /// Return a transaction to slash a validator.
     pub fn slash(&self, address: Address) -> Transaction {
-        let function = self.slash_abi.function("slash").unwrap().first().unwrap();
+        let function = SLASH_ABI_PARSED.function("slash").unwrap().first().unwrap();
         let input = function.abi_encode_input(&[DynSolValue::from(address)]).unwrap();
 
         Transaction::Legacy(TxLegacy {
@@ -258,7 +270,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
 
     /// Creates a transaction to pay block reward to a validator.
     pub fn distribute_to_validator(&self, address: Address, block_reward: u128) -> Transaction {
-        let function = self.validator_abi.function("deposit").unwrap().first().unwrap();
+        let function = VALIDATOR_ABI_PARSED.function("deposit").unwrap().first().unwrap();
         let input = function.abi_encode_input(&[DynSolValue::from(address)]).unwrap();
 
         Transaction::Legacy(TxLegacy {
@@ -279,7 +291,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
         weights: Vec<U256>,
     ) -> Transaction {
         let function =
-            self.validator_abi.function("distributeFinalityReward").unwrap().first().unwrap();
+            VALIDATOR_ABI_PARSED.function("distributeFinalityReward").unwrap().first().unwrap();
 
         let validators = validators.into_iter().map(DynSolValue::from).collect();
         let weights = weights.into_iter().map(DynSolValue::from).collect();
@@ -303,7 +315,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     /// Note: This function should only be called after Maxwell hardfork when StakeHub.addNodeIDs is available.
     #[allow(dead_code)]
     pub fn add_node_ids_tx(&self, node_ids: Vec<[u8; 32]>, nonce: u64) -> Transaction {
-        let function = self.stake_hub_abi.function("addNodeIDs").unwrap().first().unwrap();
+        let function = STAKE_HUB_ABI_PARSED.function("addNodeIDs").unwrap().first().unwrap();
 
         // Encode bytes32[]
         let node_ids_values: Vec<DynSolValue> = node_ids
@@ -333,7 +345,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     /// Note: This function should only be called after Maxwell hardfork when StakeHub.removeNodeIDs is available.
     #[allow(dead_code)]
     pub fn remove_node_ids_tx(&self, node_ids: Vec<[u8; 32]>, nonce: u64) -> Transaction {
-        let function = self.stake_hub_abi.function("removeNodeIDs").unwrap().first().unwrap();
+        let function = STAKE_HUB_ABI_PARSED.function("removeNodeIDs").unwrap().first().unwrap();
 
         let node_ids_values: Vec<DynSolValue> = node_ids
             .into_iter()
@@ -365,7 +377,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
         vote_addresses: Vec<Vec<u8>>,
     ) -> Transaction {
         let function =
-            self.validator_abi.function("updateValidatorSetV2").unwrap().first().unwrap();
+            VALIDATOR_ABI_PARSED.function("updateValidatorSetV2").unwrap().first().unwrap();
 
         let validators = validators.into_iter().map(DynSolValue::from).collect();
         let voting_powers = voting_powers.into_iter().map(DynSolValue::from).collect();
@@ -390,7 +402,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     }
 
     pub(crate) fn genesis_contracts_txs(&self) -> Vec<TransactionSigned> {
-        let function = self.validator_abi.function("init").unwrap().first().unwrap();
+        let function = VALIDATOR_ABI_PARSED.function("init").unwrap().first().unwrap();
         let input = function.abi_encode_input(&[]).unwrap();
 
         let contracts = vec![
@@ -424,7 +436,7 @@ impl<Spec: EthChainSpec + crate::hardforks::BscHardforks> SystemContract<Spec> {
     }
 
     pub(crate) fn feynman_contracts_txs(&self) -> Vec<TransactionSigned> {
-        let function = self.stake_hub_abi.function("initialize").unwrap().first().unwrap();
+        let function = STAKE_HUB_ABI_PARSED.function("initialize").unwrap().first().unwrap();
         let input = function.abi_encode_input(&[]).unwrap();
 
         let signature = Signature::new(Default::default(), Default::default(), false);
@@ -469,8 +481,7 @@ mod nodeids_call_tests {
         assert_eq!(to_add, STAKE_HUB_CONTRACT);
 
         // Decode using ABI to ensure encoding correctness
-        let abi: JsonAbi = serde_json::from_str(*STAKE_HUB_ABI).unwrap();
-        let func = abi.function("addNodeIDs").unwrap().first().unwrap();
+        let func = STAKE_HUB_ABI_PARSED.function("addNodeIDs").unwrap().first().unwrap();
         let out = func.abi_decode_input(&data_add[4..]).unwrap();
         assert_eq!(out.len(), 1);
         let arr = out[0].as_array().unwrap();
@@ -491,8 +502,7 @@ mod nodeids_call_tests {
 }
 /// Encode StakeHub.addNodeIDs call data and return (to, data).
 pub fn encode_add_node_ids_call(node_ids: Vec<[u8; 32]>) -> (Address, Bytes) {
-    let stake_hub_abi: JsonAbi = serde_json::from_str(*STAKE_HUB_ABI).unwrap();
-    let function = stake_hub_abi.function("addNodeIDs").unwrap().first().unwrap();
+    let function = STAKE_HUB_ABI_PARSED.function("addNodeIDs").unwrap().first().unwrap();
     let node_ids_values: Vec<DynSolValue> = node_ids
         .into_iter()
         .map(|id| {
@@ -508,8 +518,7 @@ pub fn encode_add_node_ids_call(node_ids: Vec<[u8; 32]>) -> (Address, Bytes) {
 
 /// Encode StakeHub.removeNodeIDs call data and return (to, data).
 pub fn encode_remove_node_ids_call(node_ids: Vec<[u8; 32]>) -> (Address, Bytes) {
-    let stake_hub_abi: JsonAbi = serde_json::from_str(*STAKE_HUB_ABI).unwrap();
-    let function = stake_hub_abi.function("removeNodeIDs").unwrap().first().unwrap();
+    let function = STAKE_HUB_ABI_PARSED.function("removeNodeIDs").unwrap().first().unwrap();
     let node_ids_values: Vec<DynSolValue> = node_ids
         .into_iter()
         .map(|id| {
