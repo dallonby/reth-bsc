@@ -1105,10 +1105,17 @@ where
     let main_dir = datadir.resolve_datadir(ctx.chain_spec().chain());
     let db_path = main_dir.data_dir().join("parlia_snapshots");
     use reth_db::{init_db, mdbx::DatabaseArguments};
-    let snapshot_db = Arc::new(
-        init_db(&db_path, DatabaseArguments::new(Default::default()))
-            .map_err(|e| eyre::eyre!("Failed to initialize snapshot database: {}", e))?,
-    );
+    let mut snapshot_db = init_db(&db_path, DatabaseArguments::new(Default::default()))
+        .map_err(|e| eyre::eyre!("Failed to initialize snapshot database: {}", e))?;
+    // The snapshot DB is a *separate* MDBX env from the main `db/`. The
+    // `ensure_parlia_tables` we call in `main.rs` only operates on the main
+    // db's handle, so the parlia tables don't exist here yet. Create them
+    // before wrapping in Arc — otherwise the first `tx.put::<ParliaSnapshotsByHash>`
+    // returns MDBX_NOTFOUND (-30798) wrapped as `DatabaseError::Open`, which
+    // blows up the genesis snapshot persist and unwinds the pipeline.
+    crate::consensus::parlia::db::ensure_parlia_tables(&mut snapshot_db)
+        .map_err(|e| eyre::eyre!("ensure_parlia_tables on snapshot db: {e}"))?;
+    let snapshot_db = Arc::new(snapshot_db);
     tracing::info!("Succeed to create a separate database instance for persistent snapshots");
 
     let snapshot_provider = Arc::new(EnhancedDbSnapshotProvider::new(
