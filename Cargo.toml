@@ -210,6 +210,19 @@ asm-keccak = [
     "alloy-primitives/asm-keccak",
 ]
 
+# Enable alloy-primitives' process-global Keccak-256 result cache.
+# `keccak256(bytes)` becomes a lookup on recent inputs; repeated hashes
+# of the same bytes (storage keys, contract addresses, tx hashes
+# re-computed downstream) hit the cache instead of recomputing.
+# Propagates through reth-ethereum / node-core / node-ethereum so all
+# transitive reth internals share the same cache.
+keccak-cache-global = [
+    "alloy-primitives/keccak-cache-global",
+    "reth-ethereum/keccak-cache-global",
+    "reth-node-core/keccak-cache-global",
+    "reth-node-ethereum/keccak-cache-global",
+]
+
 serde = [
     "alloy-chains/serde",
     "alloy-consensus/serde",
