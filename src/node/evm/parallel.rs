@@ -34,12 +34,22 @@
 //!   loop. Flag-on and flag-off behaviour are byte-identical.
 //!
 //! Next — the substantive work to turn the scaffold into a real
-//! `ParallelExecutor` dispatch:
+//! `ParallelExecutor` dispatch. Done in order because step 1 is the
+//! actual blocker:
 //!
-//! 1. Generalise `BscVmBuilder` over its chain-spec type (currently
-//!    concrete `Arc<BscChainSpec>`), or thread `Arc<BscChainSpec>` into
-//!    `BscBlockExecutor` so the parallel branch can construct the
-//!    builder without tightening the generic `Spec` bound.
+//! 1. **Bound propagation.** `ParallelExecutor::execute` takes a
+//!    `&impl Storage`, and the only way to build a `Storage` over
+//!    `self.evm.db()` without snapshotting/cloning is via
+//!    [`RefStorage<'_, DB>`] which needs `DB: DatabaseRef + Send + Sync`.
+//!    The current `BlockExecutor` impl bound is just
+//!    `E::DB: alloy_evm::block::StateDB`, so tightening it ripples
+//!    through `BscBlockBuilder`, `BscBlockAssembler`, and the miner's
+//!    `BscBlockExecutorFactory` call sites — all of which hold
+//!    `&'a mut State<DB>` today with only a `reth_evm::Database` bound
+//!    on `DB`. The miner path will never hit the parallel branch
+//!    (ctx.parallel = false for miner/live) but still has to satisfy
+//!    the impl's bounds. Tightening those bounds (and the upstream
+//!    propagation) is a small multi-file refactor in its own right.
 //! 2. In the parallel branch, collect txs into `Vec<(BscTxEnv,
 //!    Recovered<TransactionSigned>)>`. `BscTxEnv::from_recovered_tx` is
 //!    already available; the Recovered form is rebuilt from the
