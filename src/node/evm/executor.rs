@@ -429,6 +429,15 @@ where
         let block_number = block_env.number().to::<u64>();
         self.consensus_metrics.current_block_height.set(block_number as f64);
 
+        // Speculative prefetch workers skip ALL Parlia validation, snapshot
+        // writes, header/validator cache inserts, and system-contract upgrades.
+        // The *only* thing a worker does is run the block's transactions so
+        // state reads page-fault and warm the OS page cache for the main
+        // thread. We bail out here before touching anything global.
+        if self.ctx.speculative {
+            return Ok(());
+        }
+
         // pre check and prepare some intermediate data for commit parlia snapshot in finish function.
         if self.ctx.is_miner {
             self.prepare_new_block(&block_env)?;
@@ -662,11 +671,28 @@ where
     ) -> Result<(Self::Evm, BlockExecutionResult<R::Receipt>), BlockExecutionError> {
         let block_env = self.evm.block().clone();
         debug!(
-            target: "bsc::executor", 
+            target: "bsc::executor",
             block_id = %block_env.number(),
             is_miner = self.ctx.is_miner,
             "Start to finish"
         );
+
+        // Speculative prefetch workers: skip everything global-mutating. The
+        // interesting MDBX reads already happened while the txs executed;
+        // don't touch validator rewards, snapshot provider, system contracts,
+        // progress metrics, or the prefetcher progress atomic (which is only
+        // updated from the main thread).
+        if self.ctx.speculative {
+            return Ok((
+                self.evm,
+                BlockExecutionResult {
+                    receipts: self.receipts,
+                    requests: Requests::default(),
+                    gas_used: self.gas_used,
+                    blob_gas_used: self.blob_gas_used,
+                },
+            ));
+        }
 
         let parent_timestamp = self.inner_ctx.parent_header.as_ref().unwrap().timestamp;
         self.try_update_build_in_system_contract(
@@ -738,6 +764,15 @@ where
         // - sync.execution.gas_used_histogram
         // - sync.execution.gas_per_second (can be converted to MGas/s)
         // - sync.execution.execution_duration
+
+        // Publish the finished block number to the speculative prefetcher (if
+        // enabled). This powers two things:
+        //   1. Workers skip jobs they'd otherwise speculatively execute for
+        //      blocks the main thread has already finished.
+        //   2. The coordinator samples this atomic to compute rolling
+        //      blocks-per-second and gates workers on/off accordingly.
+        // No-op when the prefetcher was never initialized.
+        crate::prefetcher::publish_executed_block(self.evm.block().number().to::<u64>());
 
         Ok((
             self.evm,

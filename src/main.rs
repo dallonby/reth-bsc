@@ -106,6 +106,26 @@ pub struct BscCliArgs {
     /// Disable TX broadcast forbidden for EVN peers.
     #[arg(long = "evn.disable-tx-broadcast-forbidden")]
     pub evn_disable_tx_broadcast_forbidden: bool,
+
+    /// Number of speculative block prefetch worker threads. 0 disables the
+    /// prefetcher. Workers speculatively execute upcoming blocks to warm the
+    /// OS page cache for MDBX reads during pipeline sync; they auto-pause
+    /// near the chain tip.
+    #[arg(
+        long = "bsc.speculative-prefetch-workers",
+        env = "BSC_SPECULATIVE_PREFETCH_WORKERS",
+        default_value_t = 16
+    )]
+    pub speculative_prefetch_workers: usize,
+
+    /// How many blocks ahead of the main execution thread the prefetcher
+    /// speculatively executes. The job queue is bounded by this value.
+    #[arg(
+        long = "bsc.speculative-prefetch-window",
+        env = "BSC_SPECULATIVE_PREFETCH_WINDOW",
+        default_value_t = 128
+    )]
+    pub speculative_prefetch_window: u64,
 }
 
 fn main() -> eyre::Result<()> {
@@ -351,6 +371,10 @@ fn main() -> eyre::Result<()> {
             // shared (needs canonical header lookup); we do it in on_node_started.
             tracing::info!(target: "bsc::init", "TD accumulator initialized");
 
+            // Capture prefetcher CLI values before moving into the closure.
+            let speculative_prefetch_workers = args.speculative_prefetch_workers;
+            let speculative_prefetch_window = args.speculative_prefetch_window;
+
             let NodeHandle { node, node_exit_future: exit_future } =
                 builder
                     .extend_rpc_modules(move |ctx| {
@@ -408,6 +432,86 @@ fn main() -> eyre::Result<()> {
                         ));
                         ctx.modules.merge_configured(finality_api.into_rpc())?;
                         tracing::info!("Succeed to register BSC eth-namespace finality methods");
+
+                        // Speculative block prefetcher — N worker threads
+                        // speculatively execute upcoming blocks against a
+                        // fresh state provider. The execution bundles are
+                        // discarded; we only want the MDBX read side-effect
+                        // (each SLOAD/CALL triggers a ~4 KiB page read that
+                        // warms the OS page cache for the main thread).
+                        // Auto-pauses at chain tip via BPS-hysteresis; no-op
+                        // when workers=0.
+                        if speculative_prefetch_workers > 0 {
+                            use reth_evm::ConfigureEvm;
+                            use reth_evm::execute::Executor;
+                            use reth_provider::{
+                                BlockReader, StateProviderFactory,
+                                TransactionVariant,
+                            };
+                            use reth_revm::database::StateProviderDatabase;
+
+                            let provider_for_prefetch = ctx.provider().clone();
+                            let chain_spec_arc = std::sync::Arc::new(
+                                ctx.config().chain.clone().as_ref().clone(),
+                            );
+                            let evm_config = reth_bsc::node::evm::config::BscEvmConfig::new(
+                                chain_spec_arc,
+                            );
+
+                            let exec: reth_bsc::prefetcher::SpeculativeExecFn =
+                                std::sync::Arc::new(move |block_num: u64| {
+                                    // Look up the block from local storage
+                                    // (reth provider — hits static files or
+                                    // MDBX depending on segment).
+                                    let Ok(Some(block)) = provider_for_prefetch
+                                        .recovered_block(
+                                            block_num.into(),
+                                            TransactionVariant::NoHash,
+                                        )
+                                    else {
+                                        return;
+                                    };
+
+                                    // Fresh latest state provider. Reads hit
+                                    // MDBX and warm the OS page cache as a
+                                    // side effect.
+                                    let Ok(state_provider) =
+                                        provider_for_prefetch.latest()
+                                    else {
+                                        return;
+                                    };
+
+                                    // Wrap the state provider with the
+                                    // infinite-balance DB so revm's balance
+                                    // check doesn't short-circuit stale-state
+                                    // senders before their tx body runs.
+                                    // Construction asserts the current thread
+                                    // is marked as a speculative worker.
+                                    let inner_db =
+                                        StateProviderDatabase::new(&state_provider);
+                                    let db = reth_bsc::prefetcher::InfiniteBalanceDb::new(
+                                        inner_db,
+                                    );
+                                    let mut executor = evm_config.batch_executor(db);
+
+                                    // Execute. Any error (stale state, nonce
+                                    // mismatch, BSC-specific validation) is
+                                    // silent — worker results are discarded,
+                                    // we only wanted the MDBX reads.
+                                    let _ = executor.execute_one(&block);
+                                });
+
+                            reth_bsc::prefetcher::init(
+                                reth_bsc::prefetcher::PrefetchConfig {
+                                    worker_count: speculative_prefetch_workers,
+                                    window_size: speculative_prefetch_window,
+                                    ..Default::default()
+                                },
+                                exec,
+                                None, // lightweight warm workers disabled
+                            );
+                        }
+
                         Ok(())
                     })
                     .launch().await?;

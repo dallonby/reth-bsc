@@ -75,6 +75,24 @@ pub struct BscBlockExecutionCtx<'a> {
     pub header: Option<Header>,
     /// Whether the block is being mined.
     pub is_miner: bool,
+    /// Skip BLS vote-attestation verification.
+    ///
+    /// Safe during pipeline sync of finalized historical blocks — the BLS
+    /// aggregate signature has already been validated by the network, and
+    /// the check has no state-transition side effects. Reclaims ~8% CPU
+    /// from `blst` in the execution hot path. Must remain `false` on any
+    /// live / unvalidated path.
+    pub skip_bls_verify: bool,
+    /// Whether this executor is a speculative prefetch worker.
+    ///
+    /// When `true`, every global-mutating code path (Parlia snapshot writes,
+    /// validator cache inserts, system-contract upgrades, reward distribution,
+    /// metrics, progress publishing) is skipped. Workers run transactions
+    /// only for the MDBX read side effect — warming the OS page cache for
+    /// the main thread. Their bundle state is discarded; nothing is committed.
+    /// Populated from `crate::prefetcher::is_speculative_worker()` in
+    /// `context_for_block`.
+    pub speculative: bool,
 }
 
 impl<'a> BscBlockExecutionCtx<'a> {
@@ -250,6 +268,21 @@ where
             cfg_env.tx_gas_limit_cap = Some(MAX_TX_GAS_LIMIT_OSAKA);
         }
 
+        // Speculative prefetch workers run transactions against stale "latest"
+        // state to warm the OS page cache. Disable revm's pre-execution nonce
+        // check so stale-nonce senders don't short-circuit before the tx body
+        // runs (and issues the SLOAD/CALL reads we want for cache warming).
+        // Balance validation is handled by wrapping the DB with
+        // `prefetcher::InfiniteBalanceDb`, which lies about every account's
+        // balance being u64::MAX so the balance-sufficient check also passes.
+        // Base fee and block env stay normal: cap-warming benefit aside, txs
+        // with gas_price < basefee would be rejected early; our senders-overriden
+        // setup still respects the header's basefee.
+        // Zero correctness risk: worker bundles are dropped, never committed.
+        if crate::prefetcher::is_speculative_worker() {
+            cfg_env.disable_nonce_check = true;
+        }
+
         // derive the EIP-4844 blob fees from the header's `excess_blob_gas` and the current
         // blobparams
         let blob_excess_gas_and_price =
@@ -367,6 +400,7 @@ where
         &self,
         block: &'a SealedBlock<BlockTy<Self::Primitives>>,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
+        let speculative = crate::prefetcher::is_speculative_worker();
         Ok(BscBlockExecutionCtx {
             base: EthBlockExecutionCtx {
                 tx_count_hint: Some(block.transaction_count()),
@@ -378,6 +412,13 @@ where
             },
             header: Some(block.header().clone()),
             is_miner: false,
+            // Pipeline Execution re-executes already-finalized historical
+            // blocks, so the BLS aggregate vote-attestation check is
+            // redundant — the network has already validated them. Skipping
+            // it reclaims ~8% CPU. Speculative workers bypass it too (they
+            // bypass nearly everything).
+            skip_bls_verify: true,
+            speculative,
         })
     }
 
@@ -398,6 +439,11 @@ where
             },
             header: None, // No header available for next block context
             is_miner: true,
+            // Miner path already bypasses the whole pre-execution check via
+            // `is_miner`; keep this conservative.
+            skip_bls_verify: false,
+            // Live miner path is the main thread; never speculative.
+            speculative: false,
         })
     }
 
@@ -464,6 +510,10 @@ where
             },
             header: Some(block.header.clone()),
             is_miner: false,
+            // Live engine path handles unvalidated payloads — must verify BLS.
+            skip_bls_verify: false,
+            // Live engine path is the main thread; never speculative.
+            speculative: false,
         })
     }
 
