@@ -104,6 +104,20 @@ pub fn is_parallel_force_sequential() -> bool {
     PARALLEL_FORCE_SEQUENTIAL.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Diagnostic: log SYSTEM_ADDRESS balance after every commit_transaction
+/// and at distribute_incoming. See `BscCliArgs::parallel_diagnostic_fee_trace`.
+static PARALLEL_DIAGNOSTIC_FEE_TRACE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_parallel_diagnostic_fee_trace(enabled: bool) {
+    PARALLEL_DIAGNOSTIC_FEE_TRACE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline]
+pub fn is_parallel_diagnostic_fee_trace() -> bool {
+    PARALLEL_DIAGNOSTIC_FEE_TRACE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Global state-provider spawner used by the parallel execution path.
 ///
 /// Stashed here (not on `BscEvmConfig`) because reth's `ExecutionStage`

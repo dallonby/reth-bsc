@@ -466,6 +466,18 @@ where
             .try_into()
             .map_err(|_| BlockExecutionError::msg("system reward balance overflows u128"))?;
 
+        if crate::shared::is_parallel_diagnostic_fee_trace() {
+            tracing::info!(
+                target: "bsc::fee_trace",
+                block = self.evm.block().number().to::<u64>(),
+                validator = %validator,
+                system_address_balance_u256 = %info.balance,
+                block_reward_u128 = block_reward,
+                reward_to_system_u128 = block_reward >> SYSTEM_REWARD_PERCENT,
+                "distribute_incoming read"
+            );
+        }
+
         use revm::database_interface::DatabaseCommitExt;
         self.evm
             .db_mut()

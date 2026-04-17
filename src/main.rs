@@ -153,6 +153,14 @@ pub struct BscCliArgs {
     /// `--bsc.parallel-execute` is also set.
     #[arg(long = "bsc.parallel-force-sequential", env = "BSC_PARALLEL_FORCE_SEQUENTIAL", default_value_t = false)]
     pub parallel_force_sequential: bool,
+
+    /// Diagnostic: log `SYSTEM_ADDRESS` balance after every tx commit
+    /// and log the `distribute_to_system` reward input at post-exec.
+    /// Used to bisect the fee-accumulator bug by diffing serial vs
+    /// parallel output for the same block. Independent of the
+    /// parallel-execute flag (works on either path).
+    #[arg(long = "bsc.parallel-diagnostic-fee-trace", env = "BSC_PARALLEL_DIAGNOSTIC_FEE_TRACE", default_value_t = false)]
+    pub parallel_diagnostic_fee_trace: bool,
 }
 
 fn main() -> eyre::Result<()> {
@@ -415,6 +423,13 @@ fn main() -> eyre::Result<()> {
                 tracing::info!(
                     target: "bsc::init",
                     "parallel-force-sequential DIAGNOSTIC mode: forcing min_txs_for_parallel=usize::MAX (no worker threads, no MvMemory contention)"
+                );
+            }
+            reth_bsc::shared::set_parallel_diagnostic_fee_trace(args.parallel_diagnostic_fee_trace);
+            if args.parallel_diagnostic_fee_trace {
+                tracing::info!(
+                    target: "bsc::init",
+                    "parallel-diagnostic-fee-trace enabled: logging SYSTEM_ADDRESS balance after every commit and block_reward at post-exec"
                 );
             }
 

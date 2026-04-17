@@ -852,7 +852,7 @@ where
         &mut self,
         output: Self::Result,
     ) -> Result<u64, BlockExecutionError> {
-        let BscTxResult { result: ResultAndState { result, state }, tx_type, blob_gas_used, tx_hash: _ } = output;
+        let BscTxResult { result: ResultAndState { result, state }, tx_type, blob_gas_used, tx_hash } = output;
 
         let mut temp_state = state.clone();
         temp_state.remove(&SYSTEM_ADDRESS);
@@ -869,6 +869,17 @@ where
             self.blob_gas_used = self.blob_gas_used.saturating_add(blob_gas_used);
         }
 
+        // Diagnostic fee-trace: capture SYSTEM_ADDRESS balance FROM TX
+        // RESULT (what this tx's commit will set) vs CURRENT CACHE (what
+        // State<DB> currently has for this address). If trace is off, the
+        // `unlikely` branch short-circuits — no cost.
+        let trace = crate::shared::is_parallel_diagnostic_fee_trace();
+        let sys_in_result = if trace {
+            state.get(&SYSTEM_ADDRESS).map(|a| a.info.balance)
+        } else {
+            None
+        };
+
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
             tx_type,
             evm: &self.evm,
@@ -878,6 +889,27 @@ where
         }));
 
         self.evm.db_mut().commit(state);
+
+        if trace {
+            // Post-commit: read cache-effective SYSTEM_ADDRESS balance.
+            let sys_in_cache = self
+                .evm
+                .db_mut()
+                .basic(SYSTEM_ADDRESS)
+                .ok()
+                .flatten()
+                .map(|a| a.balance);
+            tracing::info!(
+                target: "bsc::fee_trace",
+                block = self.evm.block().number().to::<u64>(),
+                receipt_idx = self.receipts.len() - 1,
+                tx_hash = %tx_hash,
+                gas_used = gas_used,
+                sys_in_result_balance = ?sys_in_result,
+                sys_in_cache_balance = ?sys_in_cache,
+                "commit_transaction"
+            );
+        }
 
         Ok(gas_used)
     }
@@ -969,6 +1001,14 @@ where
         let gas_used = result.gas_used();
         self.gas_used += gas_used;
         self.accumulate_blob_gas_used(&tx_ref);
+
+        let trace = crate::shared::is_parallel_diagnostic_fee_trace();
+        let sys_in_result = if trace {
+            state.get(&SYSTEM_ADDRESS).map(|a| a.info.balance)
+        } else {
+            None
+        };
+
         self.receipts.push(self.receipt_builder.build_receipt(ReceiptBuilderCtx {
             tx_type,
             evm: &self.evm,
@@ -977,6 +1017,26 @@ where
             cumulative_gas_used: self.gas_used,
         }));
         self.evm.db_mut().commit(state);
+
+        if trace {
+            let sys_in_cache = self
+                .evm
+                .db_mut()
+                .basic(SYSTEM_ADDRESS)
+                .ok()
+                .flatten()
+                .map(|a| a.balance);
+            tracing::info!(
+                target: "bsc::fee_trace",
+                block = self.evm.block().number().to::<u64>(),
+                receipt_idx = self.receipts.len() - 1,
+                tx_hash = %tx_hash,
+                gas_used = gas_used,
+                sys_in_result_balance = ?sys_in_result,
+                sys_in_cache_balance = ?sys_in_cache,
+                "execute_transaction_with_result_closure"
+            );
+        }
 
         self.hertz_patch_manager.patch_after_tx(&tx_ref, self.evm.db_mut())?;
 
