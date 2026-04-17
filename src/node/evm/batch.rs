@@ -195,7 +195,16 @@ where
         BlockExecutionResult<<Self::Primitives as NodePrimitives>::Receipt>,
         Self::Error,
     > {
-        let want_parallel = crate::shared::is_parallel_execute_enabled();
+        // Gate the parallel path on both the global flag AND non-
+        // speculative context. Speculative prefetch workers also reach
+        // `batch_executor(db)` (see src/main.rs prefetcher setup),
+        // but they run with a stale, worker-owned state provider and
+        // must NOT pull from the global spawner — nested parallelism
+        // plus a divergent read source would be pure chaos. This
+        // mirrors the check `BscEvmConfig::context_for_block` does for
+        // `ctx.parallel`.
+        let want_parallel = crate::shared::is_parallel_execute_enabled()
+            && !crate::prefetcher::is_speculative_worker();
         if want_parallel {
             if let Some(spawner) = crate::shared::get_parallel_state_spawner() {
                 // `spawner` is a `&'static Arc<...>` — pass through
