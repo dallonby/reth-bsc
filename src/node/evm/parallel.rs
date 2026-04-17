@@ -42,23 +42,17 @@
 
 use crate::{
     chainspec::BscChainSpec,
-    evm::{api::BscEvm, transaction::BscTxEnv},
+    evm::transaction::BscTxEnv,
     hardforks::bsc::BscHardfork,
     node::evm::BscEvmFactory,
 };
-use alloy_primitives::{Address, B256, U256};
 use parallel_evm::{DbError, DbWrapper, Storage, TransactOutcome, VmBuilder};
 use reth_chainspec::EthChainSpec;
-use reth_evm::EvmFactory;
+use reth_evm::{EvmEnv, EvmFactory};
 use revm::{
-    bytecode::Bytecode,
-    context::{result::{EVMError, HaltReason, InvalidTransaction, ResultAndState}, BlockEnv, CfgEnv},
-    inspector::NoOpInspector,
-    primitives::hardfork::SpecId,
-    state::AccountInfo,
-    Database, ExecuteEvm,
+    context::{result::{EVMError, HaltReason}, BlockEnv, CfgEnv},
+    ExecuteEvm,
 };
-use reth_evm::EvmEnv;
 use std::sync::Arc;
 
 /// `parallel_evm::Storage` adapter over a reth-style state source.
@@ -169,20 +163,3 @@ impl VmBuilder for BscVmBuilder {
     }
 }
 
-// --- Placeholder-to-avoid-dead-code-warnings: we import several items
-// purely so the doc comments and future callers have the right paths
-// wired. The following forwards ensure they're not silently pruned on
-// unused-imports pedantry during early iteration.
-#[allow(dead_code)]
-fn _keep_unused_warnings_quiet<DB: Database>(
-    _a: AccountInfo,
-    _b: Bytecode,
-    _c: Address,
-    _d: U256,
-    _e: B256,
-    _f: SpecId,
-    _g: &BscEvm<DB, NoOpInspector>,
-    _h: ResultAndState,
-    _i: InvalidTransaction,
-) {
-}
