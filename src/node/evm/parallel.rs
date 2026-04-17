@@ -62,42 +62,69 @@ use crate::{
     hardforks::bsc::BscHardfork,
     node::evm::BscEvmFactory,
 };
+use alloy_primitives::{Address, B256, U256};
 use parallel_evm::{DbError, DbWrapper, Storage, TransactOutcome, VmBuilder};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{EvmEnv, EvmFactory};
 use revm::{
+    bytecode::Bytecode,
     context::{result::{EVMError, HaltReason}, BlockEnv, CfgEnv},
-    ExecuteEvm,
+    state::AccountInfo,
+    DatabaseRef, ExecuteEvm,
 };
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
-/// `parallel_evm::Storage` adapter over a reth-style state source.
+/// `parallel_evm::Storage` adapter that borrows any `&DB: DatabaseRef`.
 ///
-/// The generic `R` is deliberately broad — any type that exposes the four
-/// read methods fits. Typical caller: pass a `StateProviderBox` or
-/// `LatestStateProviderRef` wrapped in an `Arc`. We take ownership of the
-/// reader (via `Arc`) so the parallel executor can hand out `&self`
-/// references to worker threads without lifetime gymnastics.
-#[derive(Debug, Clone)]
-pub struct RethStorage<R> {
-    inner: Arc<R>,
+/// This is the production-path adapter we hand to `ParallelExecutor`.
+/// Crucially, `State<DB: DatabaseRef>` itself implements `DatabaseRef`
+/// via cache→bundle→underlying-DB lookups *without* mutating its cache,
+/// which is exactly what we need: parallel workers read through the
+/// executor's current `&State<DB>` and observe the `apply_pre_execution
+/// _changes` mutations without any locking. Writes are never routed
+/// through `Storage`; they're accumulated in `parallel_evm`'s MvMemory
+/// and serialised back to the executor's `State<DB>` after the parallel
+/// phase finishes.
+///
+/// The `'a` lifetime keeps us honest: the adapter cannot outlive the
+/// `&State<DB>` it borrows. Scoped worker threads inside
+/// `ParallelExecutor::execute` join before returning, so the borrow is
+/// safely bounded to a single `execute_block` invocation.
+#[derive(Debug)]
+pub struct RefStorage<'a, DB: DatabaseRef> {
+    db: &'a DB,
+    _marker: PhantomData<&'a ()>,
 }
 
-impl<R> RethStorage<R> {
-    pub fn new(inner: Arc<R>) -> Self {
-        Self { inner }
+impl<'a, DB: DatabaseRef> RefStorage<'a, DB> {
+    pub fn new(db: &'a DB) -> Self {
+        Self { db, _marker: PhantomData }
     }
 }
 
-// We can't universally impl `parallel_evm::Storage` for arbitrary reth
-// state readers without naming the exact trait bounds they expose. The
-// caller supplies a concrete `R` (typically their `StateProviderDatabase`
-// or `LatestStateProviderRef` wrapped) and implements `Storage` for
-// `RethStorage<R>` manually, OR — more commonly — skips this wrapper
-// entirely and implements `Storage` directly on their provider type.
-//
-// The wrapper exists mostly to document the shape and to show the
-// `Clone + Send + Sync` requirements are satisfiable.
+impl<'a, DB> Storage for RefStorage<'a, DB>
+where
+    DB: DatabaseRef + std::fmt::Debug + Send + Sync + 'a,
+    DB::Error: std::error::Error + Send + Sync + 'static,
+{
+    type Error = DB::Error;
+
+    fn basic(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        DatabaseRef::basic_ref(self.db, address)
+    }
+
+    fn code_by_hash(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        DatabaseRef::code_by_hash_ref(self.db, code_hash)
+    }
+
+    fn storage(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+        DatabaseRef::storage_ref(self.db, address, slot)
+    }
+
+    fn block_hash(&self, number: u64) -> Result<B256, Self::Error> {
+        DatabaseRef::block_hash_ref(self.db, number)
+    }
+}
 
 /// VmBuilder over BSC's revm variant.
 ///
