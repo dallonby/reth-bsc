@@ -636,6 +636,23 @@ where
         // check above); system txs are buffered exactly like the serial
         // `execute_transaction_with_result_closure` does — the `finish`
         // phase replays them via the system-contract path.
+        //
+        // # State cache pre-warming
+        //
+        // `commit_transaction` calls `State<DB>::commit`, which panics
+        // with "All accounts should be present inside cache" if the
+        // touched accounts weren't loaded into `State<DB>`'s cache
+        // during tx execution. In the serial path, every read that
+        // lands on `State<DB>::basic` populates the cache as a side
+        // effect. Our parallel workers read through `LayeredStorage`
+        // (bundle overlay + fresh per-worker state providers), which
+        // bypasses `State<DB>`'s cache entirely. So before each commit
+        // we warm the cache by driving a `basic(addr)` for every
+        // address in the result's state map — this routes through
+        // `State<DB>::load_cache_account` and populates the cache
+        // identically to how the serial tx reads would have. The warm
+        // reads hit the bundle / DB (same layers as the parallel
+        // workers used) so there's no divergence risk.
         let mut parallel_iter = output.results.into_iter();
         for s in slots {
             if s.is_system {
@@ -646,6 +663,17 @@ where
                 .next()
                 .expect("user-tx count mismatch between slots and parallel output")
                 .expect("error results already filtered above");
+
+            // Warm State<DB>'s cache for every touched account so the
+            // commit below doesn't panic on "All accounts should be
+            // present inside cache".
+            for addr in ras.state.keys() {
+                self.evm
+                    .db_mut()
+                    .basic(*addr)
+                    .map_err(BlockExecutionError::other)?;
+            }
+
             self.commit_transaction(BscTxResult {
                 result: ras,
                 tx_type: s.tx_type,
