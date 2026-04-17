@@ -1367,6 +1367,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4858a9d740c5007a9069007c3b4e91152d0506f13c1b31dd49051fd537656156"
 
 [[package]]
+name = "assert_matches"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
+
+[[package]]
 name = "async-compression"
 version = "0.4.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5796,6 +5802,20 @@ checksum = "30d5b2194ed13191c1999ae0704b7839fb18384fa22e49b57eeaa97d79ce40da"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "parallel-evm"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "assert_matches",
+ "dashmap",
+ "parking_lot",
+ "revm",
+ "revm-context-interface 17.0.0",
+ "revm-database",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

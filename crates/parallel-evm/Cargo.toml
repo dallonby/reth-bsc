@@ -1,0 +1,32 @@
+[package]
+name = "parallel-evm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Chain-agnostic parallel EVM executor (Block-STM) for revm-based runtimes"
+
+[lib]
+name = "parallel_evm"
+path = "src/lib.rs"
+
+[dependencies]
+# Native revm — caller's EVM variant (including revmc-compiled ones) plugs
+# in via the `VmBuilder` trait with no wrapping types from us.
+revm = "36.0.0"
+revm-context-interface = "17.0.0"
+revm-database = "12.0.0"
+
+alloy-primitives = { version = "1.5.6", default-features = false, features = ["map-foldhash"] }
+
+# Concurrency primitives. DashMap for the outer MV-memory map (sharded hash),
+# parking_lot locks for the per-location BTreeMap guards. Both are well-
+# understood baselines — swap if profiling shows contention.
+dashmap = "6.1"
+parking_lot = "0.12"
+
+thiserror = "2.0"
+
+[dev-dependencies]
+# For the differential correctness tests — assert-matches to pin specific
+# enum variants in assertions without pattern noise.
+assert_matches = "1.5"
