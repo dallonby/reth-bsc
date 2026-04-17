@@ -817,4 +817,21 @@ impl HertzPatchManager {
         }
         Ok(())
     }
+
+    /// Returns true if the given tx hash has a Hertz storage patch applied
+    /// either before or after execution on the configured network.
+    ///
+    /// Used by the parallel executor to detect blocks that contain
+    /// Hertz-patched txs — those must be executed serially because the
+    /// patch is a storage override applied around the tx against the
+    /// executor's state DB, and parallel workers read a pre-patch view.
+    pub fn has_patch(&self, tx_hash: &alloy_primitives::B256) -> bool {
+        if self.is_mainnet {
+            MAINNET_PATCHES_BEFORE_TX.contains_key(tx_hash)
+                || MAINNET_PATCHES_AFTER_TX.contains_key(tx_hash)
+        } else {
+            CHAPEL_PATCHES_BEFORE_TX.contains_key(tx_hash)
+                || CHAPEL_PATCHES_AFTER_TX.contains_key(tx_hash)
+        }
+    }
 }
