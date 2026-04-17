@@ -60,8 +60,15 @@ where
         block: &BlockEnv
     ) -> Result<(), BlockExecutionError> {
         tracing::debug!("Start to post check new block, block_number: {}, is_miner: {}", block.number(), self.ctx.is_miner); 
-        self.verify_validators(self.inner_ctx.current_validators.clone(), self.inner_ctx.header.clone())?;
-        self.verify_turn_length(self.inner_ctx.header.clone())?;
+        // verify_validators + verify_turn_length both early-return on
+        // non-epoch-boundary blocks (99.5% of blocks on BSC given
+        // epoch_length = 200). The pre-refactor caller cloned header
+        // + validators into the functions by value; the functions now
+        // read `self.inner_ctx.{header,current_validators}` directly,
+        // so non-epoch blocks pay zero clones and epoch-boundary blocks
+        // pay only the sort-necessary clone inside verify_validators.
+        self.verify_validators()?;
+        self.verify_turn_length()?;
 
         // check the system txs.
         if self.inner_ctx.header.as_ref().unwrap().difficulty != DIFF_INTURN {
@@ -166,37 +173,62 @@ where
         Ok(())
     }
 
-    fn verify_validators(
-        &mut self, 
-        current_validators: Option<(Vec<Address>, HashMap<Address, VoteAddress>)>, 
-        header: Option<Header>
-    ) -> Result<(), BlockExecutionError> {
-        let header_ref = header.as_ref().unwrap();
-        let epoch_length = self.inner_ctx.snap.as_ref().unwrap().epoch_num;
+    /// Verify the validator set encoded in the block header matches
+    /// `self.inner_ctx.current_validators`. Only runs on epoch-boundary
+    /// blocks (every `epoch_length` blocks on BSC, i.e. 1 in 200).
+    ///
+    /// Reads header + validators from `self.inner_ctx` directly rather
+    /// than taking them as parameters — this pushes the clone (which
+    /// `sort()` forces us to make) inside the epoch-boundary branch,
+    /// so non-epoch blocks don't pay any clone cost at all.
+    fn verify_validators(&mut self) -> Result<(), BlockExecutionError> {
+        let header_ref = self.inner_ctx.header.as_ref()
+            .ok_or_else(|| BlockExecutionError::msg("missing header in inner_ctx"))?;
+        let epoch_length = self.inner_ctx.snap.as_ref()
+            .ok_or_else(|| BlockExecutionError::msg("missing snapshot in inner_ctx"))?
+            .epoch_num;
         if !header_ref.number.is_multiple_of(epoch_length) {
-            tracing::trace!("Skip verify validator, block_number {} is not an epoch boundary, epoch_length: {}", header_ref.number, epoch_length);
+            tracing::trace!(
+                "Skip verify validator, block_number {} is not an epoch boundary, epoch_length: {}",
+                header_ref.number, epoch_length,
+            );
             return Ok(());
         }
 
-        let (mut validators, mut vote_addrs_map) =
-            current_validators.ok_or(BlockExecutionError::msg("Invalid current validators data"))?;
+        // Epoch boundary: clone the validator set so we can sort. This
+        // is the ONLY clone in the whole function and it fires on
+        // ~0.5% of blocks.
+        let (validators_src, vote_addrs_src) = self
+            .inner_ctx
+            .current_validators
+            .as_ref()
+            .ok_or(BlockExecutionError::msg("Invalid current validators data"))?;
+        let mut validators = validators_src.clone();
         validators.sort();
 
+        // `vote_addrs_map` needs owning semantics because the Luban
+        // transition path rebuilds it. Clone the source for the path
+        // where we keep it; the transition path overwrites with a
+        // fresh HashMap anyway and we build that directly.
         let validator_num = validators.len();
-        if self.spec.is_luban_transition_at_block(header_ref.number) {
-            vote_addrs_map = validators
-                .iter()
-                .copied()
-                .zip(vec![VoteAddress::default(); validator_num])
-                .collect::<HashMap<_, _>>();
-        }
+        let vote_addrs_map: HashMap<Address, VoteAddress> =
+            if self.spec.is_luban_transition_at_block(header_ref.number) {
+                validators
+                    .iter()
+                    .copied()
+                    .zip(vec![VoteAddress::default(); validator_num])
+                    .collect()
+            } else {
+                vote_addrs_src.clone()
+            };
 
+        let luban_active = self.spec.is_luban_active_at_block(header_ref.number);
         let validator_bytes: Vec<u8> = validators
-            .into_iter()
+            .iter()
             .flat_map(|v| {
                 let mut bytes = v.to_vec();
-                if self.spec.is_luban_active_at_block(header_ref.number) {
-                    bytes.extend_from_slice(vote_addrs_map[&v].as_ref());
+                if luban_active {
+                    bytes.extend_from_slice(vote_addrs_map[v].as_ref());
                 }
                 bytes
             })
@@ -204,8 +236,9 @@ where
 
         let expected = self.parlia.get_validator_bytes_from_header(header_ref, epoch_length).unwrap();
         if !validator_bytes.as_slice().eq(expected.as_slice()) {
-            warn!("validator bytes: {:?}", hex::encode(validator_bytes));
-            warn!("expected: {:?}", hex::encode(expected));
+            // hex::encode allocates; only pay on the failure path.
+            warn!("validator bytes: {:?}", hex::encode(&validator_bytes));
+            warn!("expected: {:?}", hex::encode(&expected));
             return Err(BlockExecutionError::msg("Invalid validators"));
         }
         tracing::debug!("Succeed to verify validators, block_number: {}, epoch_length: {}", header_ref.number, epoch_length);
@@ -213,14 +246,20 @@ where
         Ok(())
     }
 
-    fn verify_turn_length(
-        &mut self, 
-        header: Option<Header>
-    ) -> Result<(), BlockExecutionError> {
-        let header_ref = header.as_ref().unwrap();
-        let epoch_length = self.inner_ctx.snap.as_ref().unwrap().epoch_num;
+    /// Verify Bohr's epoch turn length matches the header's encoded
+    /// value. Only runs on epoch-boundary blocks AND only post-Bohr —
+    /// for blocks that don't qualify, no work is done at all.
+    fn verify_turn_length(&mut self) -> Result<(), BlockExecutionError> {
+        let header_ref = self.inner_ctx.header.as_ref()
+            .ok_or_else(|| BlockExecutionError::msg("missing header in inner_ctx"))?;
+        let epoch_length = self.inner_ctx.snap.as_ref()
+            .ok_or_else(|| BlockExecutionError::msg("missing snapshot in inner_ctx"))?
+            .epoch_num;
         if !header_ref.number.is_multiple_of(epoch_length) || !self.spec.is_bohr_active_at_timestamp(header_ref.number, header_ref.timestamp) {
-            tracing::trace!("Skip verify turn length, block_number {} is not an epoch boundary, epoch_length: {}", header_ref.number, epoch_length);
+            tracing::trace!(
+                "Skip verify turn length, block_number {} is not an epoch boundary, epoch_length: {}",
+                header_ref.number, epoch_length,
+            );
             return Ok(());
         }
         let turn_length_from_header = self
