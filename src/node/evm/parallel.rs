@@ -30,41 +30,82 @@
 //!   observe `apply_pre_execution_changes` mutations lock-free.
 //! - `BscBlockExecutor::execute_block` override with `ctx.parallel`
 //!   runtime branch (scaffold, falls through to serial).
-//! - **`BscBlockExecutor::execute_block_parallel<DB>` inherent method**
-//!   — the real parallel dispatch. Method-level where clauses pin
-//!   `EVM::DB = &'a mut State<DB>` with `DB: Database + DatabaseRef +
-//!   Send + Sync` so the method is only callable from call sites whose
-//!   concrete types satisfy (production sync: yes, miner path: no).
-//!   Does the full parallel loop: pre-exec → tx split → Hertz fallback
-//!   check → ParallelExecutor dispatch → serial commit via
-//!   `self.commit_transaction` → system tail → post-exec. All types
-//!   Reth SDK (ExecutableTx, BlockExecutionResult, BlockExecutor); the
-//!   `ParallelExecutor` engine is our portable `parallel-evm` crate.
-//!   Compile-check test in executor.rs proves the method resolves on
-//!   the production-shaped concrete types `BscEvm<&'a mut State<DB>,
-//!   NoOpInspector>, Arc<BscChainSpec>, RethReceiptBuilder`.
+//! - `HertzPatchManager::has_patch(&tx_hash)` helper for fallback
+//!   detection.
 //!
-//! # Activation path (not yet done — last-mile wiring)
+//! **An earlier attempt landed `BscBlockExecutor::execute_block_parallel
+//! <DB>` with method-level bounds `EVM::DB = &'a mut State<DB>`, `DB:
+//! DatabaseRef + Send + Sync`. It was REVERTED — the bounds couldn't
+//! be satisfied at production call sites because reth's concrete DB
+//! chain `StateProviderDatabase<LatestStateProviderRef<'_, Database
+//! Provider<TX, N>>>` requires `TX: DbTx + Sync`, and `DbTx: Debug +
+//! Send` by design (MDBX transactions are intentionally not `Sync`).
+//! The compile-check test was a false positive on a generic DB.**
 //!
-//! The method exists and is callable; the remaining piece is making
-//! reth's pipeline sync USE it instead of the default serial
-//! `execute_block`. That needs a custom `ExecutionStage` in our node's
-//! pipeline construction that, when `ctx.parallel` is set, calls
-//! `executor.execute_block_parallel(txs)` instead of the trait's
-//! `execute_block(txs)`. Steps:
+//! # The correct design (next session)
 //!
-//! 1. In `main.rs` / `node/mod.rs`, customise the pipeline stage set
-//!    (reth exposes this via `StageSet` / `StagesBuilder`).
-//! 2. Define `BscParallelExecutionStage<E>` mirroring reth's
-//!    `ExecutionStage<E>` but with one line changed: the inner
-//!    `executor.execute_one(input)` call becomes
-//!    `executor.execute_one_parallel(input)` (a thin wrapper that
-//!    internally dispatches to `execute_block_parallel` when
-//!    `ctx.parallel`).
-//! 3. Register the stage in place of reth's default.
+//! Reth's parallel-state primitive is `ConsistentDbView<Factory>` —
+//! factory IS `Send + Sync`, each worker calls `view.provider_ro()`
+//! for its own fresh tx. The correct `execute_block_parallel`
+//! signature accepts a factory instead of relying on `&State<DB>`:
 //!
-//! Scope: ~200 LOC of pipeline-stage boilerplate, one-file change.
-//! The architectural work is done — this is glue.
+//! ```ignore
+//! pub fn execute_block_parallel<F>(
+//!     mut self,
+//!     view: &ConsistentDbView<F>,
+//!     transactions: impl IntoIterator<Item = impl ExecutableTx<Self>>,
+//! ) -> Result<BlockExecutionResult<R::Receipt>, BlockExecutionError>
+//! where
+//!     F: DatabaseProviderFactory + Send + Sync + Clone + 'static,
+//!     // existing BscBlockExecutor bounds
+//! {
+//!     // 1. apply_pre_execution_changes (mutates self.evm.db())
+//!     // 2. Snapshot current bundle_state IMMUTABLY from self.evm.db()
+//!     //    (this requires concrete-type access — see step 0 below)
+//!     // 3. Materialise txs; user/system split; Hertz detection
+//!     // 4. Build LayeredStorage{bundle_snapshot, view}:
+//!     //    - basic(addr): check bundle_snapshot first, else
+//!     //      view.provider_ro()?.basic_account(addr)
+//!     //    - similar for storage, code_by_hash, block_hash
+//!     // 5. ParallelExecutor::execute(&layered, ...)
+//!     // 6. Serial commit via self.commit_transaction (unchanged)
+//!     // 7. System tail + apply_post_execution_changes
+//! }
+//! ```
+//!
+//! Step 0 (prerequisite): BscBlockExecutor cannot access
+//! `self.evm.db().bundle_state` through its generic `E::DB` bound.
+//! Options: (a) tighten `BscBlockExecutor`'s `E::DB` via a NEW
+//! construction path (e.g., `BscEvmConfig::create_parallel_executor`
+//! inherent method with tight bounds, not the trait method); (b) pass
+//! the bundle snapshot in as an argument at `execute_block_parallel`
+//! entry; (c) fork `BscBlockExecutor` into a parallel-specific wrapper
+//! type with concrete `DB` generic.
+//!
+//! (b) is cleanest — keeps BscBlockExecutor generic, the caller
+//! (custom ExecutionStage or payload validator) captures the bundle
+//! snapshot from `State<DB>` BEFORE handing it to the method.
+//!
+//! # Integration points for activation
+//!
+//! Both sync paths eventually call `ConfigureEvm`-provided executors:
+//!
+//! - **Staged sync**: reth's `ExecutionStage` → `batch_executor(db)`
+//!   → `BasicBlockExecutor::execute_one` → `executor_for_block(...)
+//!   .execute_block(...)`. To activate parallel, replace with a
+//!   custom stage in our node builder that holds a
+//!   `ConsistentDbView`, iterates blocks, and calls
+//!   `execute_block_parallel(view, txs)` instead.
+//!
+//! - **Live sync**: reth's `EngineTree::payload_validator::execute_
+//!   block` creates executor via `create_executor` and iterates txs
+//!   with streaming receipts. Parallel integration either (i) accepts
+//!   loss of receipt streaming for parallel blocks or (ii) requires a
+//!   custom `PayloadValidator` impl.
+//!
+//! For a focused follow-up session, start with (staged sync only) —
+//! smaller scope, validates the architecture. Live sync activation
+//! becomes a follow-up once staged-sync perf numbers justify.
 //!
 //! Next — the substantive work to turn the scaffold into a real
 //! `ParallelExecutor` dispatch. Done in order because step 1 is the
