@@ -89,6 +89,21 @@ pub fn is_parallel_execute_enabled() -> bool {
     PARALLEL_EXECUTE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Diagnostic: force `parallel-evm`'s sequential path by passing
+/// `min_txs_for_parallel = usize::MAX` to `ParallelConfig`. See the
+/// flag doc on `BscCliArgs::parallel_force_sequential`.
+static PARALLEL_FORCE_SEQUENTIAL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_parallel_force_sequential(enabled: bool) {
+    PARALLEL_FORCE_SEQUENTIAL.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline]
+pub fn is_parallel_force_sequential() -> bool {
+    PARALLEL_FORCE_SEQUENTIAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Global state-provider spawner used by the parallel execution path.
 ///
 /// Stashed here (not on `BscEvmConfig`) because reth's `ExecutionStage`

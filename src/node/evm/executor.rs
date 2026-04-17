@@ -587,7 +587,17 @@ where
         // workers. If we later need workload-specific tuning we'll plumb
         // it through the CLI.
         let vm_builder = BscVmBuilder::new(self.spec.clone());
-        let parallel = ParallelExecutor::new(ParallelConfig::default(), vm_builder);
+        let mut parallel_config = ParallelConfig::default();
+        if crate::shared::is_parallel_force_sequential() {
+            // Diagnostic mode: pin the threshold high enough that every
+            // block falls through `parallel-evm`'s sequential path. Same
+            // entry flow, same LayeredStorage reads, same commit code,
+            // but without Block-STM worker threads or MvMemory
+            // contention. Useful to bisect bugs between the adapter
+            // layer and the concurrency layer.
+            parallel_config.min_txs_for_parallel = usize::MAX;
+        }
+        let parallel = ParallelExecutor::new(parallel_config, vm_builder);
         let layered = LayeredStorage::new(bundle_snapshot, spawner);
 
         // Temporarily reset CPU affinity to all cores for the duration

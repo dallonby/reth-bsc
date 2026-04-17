@@ -142,6 +142,17 @@ pub struct BscCliArgs {
     /// that block.
     #[arg(long = "bsc.parallel-execute", env = "BSC_PARALLEL_EXECUTE", default_value_t = false)]
     pub parallel_execute: bool,
+
+    /// Diagnostic: force every block through `parallel-evm`'s SEQUENTIAL
+    /// path (no Block-STM worker threads, no MvMemory concurrency).
+    /// Still goes through `BscBatchExecutor::try_execute_one_parallel`,
+    /// `LayeredStorage`, and the parallel-commit code — just without
+    /// the actual parallelism. Used to bisect: if a bug persists with
+    /// this on, it's in the adapter layer; if it disappears, it's in
+    /// the MvMemory conflict-tracking layer. Only meaningful when
+    /// `--bsc.parallel-execute` is also set.
+    #[arg(long = "bsc.parallel-force-sequential", env = "BSC_PARALLEL_FORCE_SEQUENTIAL", default_value_t = false)]
+    pub parallel_force_sequential: bool,
 }
 
 fn main() -> eyre::Result<()> {
@@ -398,6 +409,13 @@ fn main() -> eyre::Result<()> {
             reth_bsc::shared::set_parallel_execute_enabled(args.parallel_execute);
             if args.parallel_execute {
                 tracing::info!(target: "bsc::init", "parallel-evm block-STM execution enabled");
+            }
+            reth_bsc::shared::set_parallel_force_sequential(args.parallel_force_sequential);
+            if args.parallel_force_sequential {
+                tracing::info!(
+                    target: "bsc::init",
+                    "parallel-force-sequential DIAGNOSTIC mode: forcing min_txs_for_parallel=usize::MAX (no worker threads, no MvMemory contention)"
+                );
             }
 
             let NodeHandle { node, node_exit_future: exit_future } =
