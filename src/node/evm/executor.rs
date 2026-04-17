@@ -590,12 +590,20 @@ where
         let parallel = ParallelExecutor::new(ParallelConfig::default(), vm_builder);
         let layered = LayeredStorage::new(bundle_snapshot, spawner);
 
-        let output = match parallel.execute(
-            &layered,
-            block_env,
-            hardfork,
-            user_tx_envs,
-        ) {
+        // Temporarily reset CPU affinity to all cores for the duration
+        // of the parallel phase. The prefetcher pins the main execution
+        // thread to a single CCD0 core (see
+        // `crate::prefetcher::pin_main_thread_once`), and parallel-evm
+        // spawns its scoped worker threads via `std::thread::scope`,
+        // which inherit the caller's affinity at spawn time. Without
+        // this reset, all 16 workers fight for that single core and
+        // the parallel path delivers ~0x speedup. The helper restores
+        // the single-core pin after the closure returns.
+        let output_result = crate::prefetcher::with_all_cores_affinity(|| {
+            parallel.execute(&layered, block_env, hardfork, user_tx_envs)
+        });
+
+        let output = match output_result {
             Ok(o) => o,
             Err(err) => {
                 // Trigger (2): parallel failure → serial fallback. No

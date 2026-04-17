@@ -299,6 +299,70 @@ fn pin_main_thread_once() {
     });
 }
 
+/// Temporarily reset the current thread's CPU affinity to all online
+/// cores, run the closure, then re-pin the main thread back to its
+/// single CCD0 core.
+///
+/// The parallel-evm worker threads spawned inside the closure inherit
+/// the caller's affinity at `thread::spawn` time. Without this helper,
+/// they'd all land on the single core that
+/// [`pin_main_thread_once`] pins us to — so 16 workers would
+/// serialise on one core and the parallel path would deliver ~0x
+/// speedup over serial.
+///
+/// Non-linux targets are a no-op — the `pin_main_thread_once` helper
+/// is already gated to `target_os = "linux"`, so there's no pinning
+/// on other platforms and nothing to reset.
+#[cfg(target_os = "linux")]
+pub fn with_all_cores_affinity<R>(f: impl FnOnce() -> R) -> R {
+    // Snapshot: build an "all online cores" cpu_set_t and set it as the
+    // current thread's affinity. Save the previous set so we can restore.
+    let nproc = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(1) as usize;
+    let mut prev: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    let have_prev = unsafe {
+        libc::CPU_ZERO(&mut prev);
+        libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut prev) == 0
+    };
+
+    let mut all: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::CPU_ZERO(&mut all);
+        for cpu in 0..nproc.min(libc::CPU_SETSIZE as usize) {
+            libc::CPU_SET(cpu, &mut all);
+        }
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &all);
+    }
+
+    // Thread-local flag used by `pin_main_thread_once` — clear it so the
+    // FIRST post-closure `publish_executed_block` call re-pins us.
+    MAIN_THREAD_PINNED.with(|p| p.set(false));
+
+    let result = f();
+
+    // Restore. Prefer the snapshotted prev set; if getaffinity failed
+    // (never seen in practice on Linux), fall back to re-pinning via
+    // the existing helper.
+    if have_prev {
+        unsafe {
+            libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &prev);
+        }
+        // Whatever prev was, assume it represented an intentional pin —
+        // mark the thread-local as "pinned" so pin_main_thread_once
+        // doesn't fight it on the next block boundary.
+        MAIN_THREAD_PINNED.with(|p| p.set(true));
+    } else {
+        pin_main_thread_once();
+    }
+
+    result
+}
+
+/// No-op version for non-Linux. Just runs the closure.
+#[cfg(not(target_os = "linux"))]
+pub fn with_all_cores_affinity<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
 /// Initialize the prefetcher and spawn the worker threads and coordinator task.
 ///
 /// Should be called at most once, after the node builder has materialized
