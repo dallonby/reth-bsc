@@ -19,19 +19,52 @@
 //!
 //! # Wiring status (2026-04-17)
 //!
-//! The `--bsc.parallel-execute` CLI flag is live: it sets a process-wide
-//! atomic in [`crate::shared`], which `BscEvmConfig::context_for_block`
-//! reads and propagates through `BscBlockExecutionCtx::parallel` on every
-//! non-speculative block. `BscBlockExecutor::apply_pre_execution_changes`
-//! logs a `debug!` line when the flag is active.
+//! Landed in this series of commits:
 //!
-//! Not yet wired: the actual parallel branch that replaces the default
-//! tx-iteration loop with a `ParallelExecutor` call. That requires (a) a
-//! concrete `Storage` impl over the executor's `State<DB>` (the existing
-//! `RethStorage<R>` stub is a placeholder), and (b) a serial commit phase
-//! that applies Hertz patches, `on_state` hooks, receipt building, and
-//! state commits in tx order. Until that lands, flag-on behaves
-//! identically to flag-off (serial loop) with a per-block log marker.
+//! - `--bsc.parallel-execute` CLI flag sets a process-wide atomic that
+//!   `BscEvmConfig::context_for_block` reads into `BscBlockExecutionCtx
+//!   ::parallel` on every non-speculative block.
+//! - [`RefStorage`] implements [`parallel_evm::Storage`] over any
+//!   `&DB: DatabaseRef` — including revm's `State<DB: DatabaseRef>`
+//!   itself, whose cache-first DatabaseRef impl lets parallel workers
+//!   observe `apply_pre_execution_changes` mutations lock-free.
+//! - `BscBlockExecutor::execute_block` is overridden with the runtime
+//!   branch on `ctx.parallel`. Today the branch is a scaffold: it
+//!   materialises the tx slice, logs, and falls through to the serial
+//!   loop. Flag-on and flag-off behaviour are byte-identical.
+//!
+//! Next — the substantive work to turn the scaffold into a real
+//! `ParallelExecutor` dispatch:
+//!
+//! 1. Generalise `BscVmBuilder` over its chain-spec type (currently
+//!    concrete `Arc<BscChainSpec>`), or thread `Arc<BscChainSpec>` into
+//!    `BscBlockExecutor` so the parallel branch can construct the
+//!    builder without tightening the generic `Spec` bound.
+//! 2. In the parallel branch, collect txs into `Vec<(BscTxEnv,
+//!    Recovered<TransactionSigned>)>`. `BscTxEnv::from_recovered_tx` is
+//!    already available; the Recovered form is rebuilt from the
+//!    `ExecutableTx`'s `tx()`/`signer()` via `Recovered::new_unchecked`.
+//! 3. Split user txs from system txs (via
+//!    `is_system_transaction(&signed, signer, beneficiary)`) — system
+//!    txs take the existing serial path through
+//!    `execute_transaction_with_result_closure`.
+//! 4. Detect Hertz-patched tx hashes up front and force serial for the
+//!    whole block if any are present. Patch entries are in
+//!    `super::patch::{MAINNET,CHAPEL}_PATCHES_BEFORE_TX`; expose a
+//!    `has_patch(tx_hash)` helper on `HertzPatchManager` for the check.
+//! 5. Call `ParallelExecutor::execute(&RefStorage::new(self.evm.db()),
+//!    block_env.clone(), spec, user_tx_envs)`. Drop the storage borrow
+//!    before entering the serial commit phase.
+//! 6. Serial commit phase: for each tx in block order, convert
+//!    `TxResult::Ok(ResultAndState)` into `BscTxResult` and call
+//!    `self.commit_transaction(...)` — which already handles on_state
+//!    hook, receipt builder, gas/blob accounting, and state commit.
+//!    Hertz patches stay no-ops via the existing `patch_before/after_tx`
+//!    calls (they'll never apply because step 4 forced serial).
+//! 7. On any `parallel_evm::Error` (budget exceeded, storage failure),
+//!    abort to a pure-serial retry of the block. Block-STM is
+//!    deterministic, so any state-root divergence during validation is
+//!    a real bug — bubble it up immediately.
 //!
 //! # Integration sketch
 //!
@@ -132,26 +165,36 @@ where
 /// method builds a fresh `CfgEnv` (carrying the `BscHardfork`),
 /// instantiates a `BscEvm`, runs the tx, and maps revm's errors onto our
 /// `TransactOutcome`.
+///
+/// Generic over the chain-spec type so the builder can be instantiated
+/// from inside `BscBlockExecutor` (whose `Spec` is a generic parameter).
+/// The only chain-spec method actually used at runtime is
+/// `EthChainSpec::chain().id()` for the CfgEnv chain_id. Default type
+/// parameter `Arc<BscChainSpec>` preserves the original ergonomics for
+/// callers that already hold one.
 #[derive(Debug, Clone)]
-pub struct BscVmBuilder {
-    chain_spec: Arc<BscChainSpec>,
+pub struct BscVmBuilder<CS = Arc<BscChainSpec>> {
+    chain_spec: CS,
     factory: BscEvmFactory,
 }
 
-impl BscVmBuilder {
-    pub fn new(chain_spec: Arc<BscChainSpec>) -> Self {
+impl<CS> BscVmBuilder<CS> {
+    pub fn new(chain_spec: CS) -> Self {
         Self {
             chain_spec,
             factory: BscEvmFactory::default(),
         }
     }
 
-    pub fn chain_spec(&self) -> &Arc<BscChainSpec> {
+    pub fn chain_spec(&self) -> &CS {
         &self.chain_spec
     }
 }
 
-impl VmBuilder for BscVmBuilder {
+impl<CS> VmBuilder for BscVmBuilder<CS>
+where
+    CS: EthChainSpec + Clone + std::fmt::Debug + Send + Sync + 'static,
+{
     type Tx = BscTxEnv;
     type HaltReason = HaltReason;
     type Spec = BscHardfork;
