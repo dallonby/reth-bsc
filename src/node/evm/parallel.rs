@@ -246,13 +246,16 @@ use crate::{
     hardforks::bsc::BscHardfork,
     node::evm::BscEvmFactory,
 };
+use alloy_consensus::constants::KECCAK_EMPTY;
 use alloy_primitives::{Address, B256, U256};
 use parallel_evm::{DbError, DbWrapper, Storage, TransactOutcome, VmBuilder};
 use reth_chainspec::EthChainSpec;
 use reth_evm::{EvmEnv, EvmFactory};
+use reth_provider::{ProviderError, StateProviderFactory};
 use revm::{
     bytecode::Bytecode,
     context::{result::{EVMError, HaltReason}, BlockEnv, CfgEnv},
+    database::BundleState,
     state::AccountInfo,
     DatabaseRef, ExecuteEvm,
 };
@@ -309,6 +312,160 @@ where
         DatabaseRef::block_hash_ref(self.db, number)
     }
 }
+
+/// `parallel_evm::Storage` adapter that layers an immutable `BundleState`
+/// snapshot over a Send+Sync `StateProviderFactory`.
+///
+/// # Why not `ConsistentDbView` or a plain `&DB: DatabaseRef`
+///
+/// - `ConsistentDbView<Factory>` was the initial design target, but its
+///   `provider_ro()` performs a tip-consistency check that fails with
+///   `ConsistentViewError::Syncing` during pipeline staged-sync — the
+///   very path where parallel execution needs to run. So we bind on
+///   `StateProviderFactory` directly and accept that live-sync callers
+///   would add their own consistency layer on top if needed.
+/// - `&DB: DatabaseRef` (what `RefStorage` uses) fails at the production
+///   monomorphization because reth's `StateProviderDatabase<LatestStateProviderRef
+///   <'_, DatabaseProvider<TX>>>` can't be `Sync` — MDBX txs are Send-only
+///   by design. The factory-based approach sidesteps this: each worker
+///   calls `factory.latest()` from its own thread to get a fresh
+///   `StateProviderBox`, which only needs `Send`.
+///
+/// # Layered read pattern
+///
+/// 1. **Bundle overlay** (`bundle_snapshot`): captures in-batch committed
+///    transitions. During pipeline sync, reth's `ExecutionStage` batches
+///    many blocks into a single commit — a plain "latest" state provider
+///    would miss every intra-batch change. The caller snapshots
+///    `State<DB>::bundle_state` immutably before calling
+///    `execute_block_parallel` and passes it here as `bundle_snapshot`.
+/// 2. **StateProvider fallback** (`factory.latest()`): for any read the
+///    bundle doesn't answer, spawn a fresh per-worker state provider and
+///    delegate.
+///
+/// # Cost model (Phase 1)
+///
+/// Phase 1 spawns a fresh `StateProviderBox` on EVERY fallback read.
+/// That's one MDBX tx + trait-object boxing per non-bundle read. This is
+/// painful for perf but trivially correct. Phase 2 will add a
+/// `ThreadLocal<RefCell<Option<StateProviderBox>>>` so each worker thread
+/// spawns at most one provider per `execute_block_parallel` invocation.
+///
+/// # Lifetime contract
+///
+/// The `'a` lifetime binds both borrows to a single
+/// `execute_block_parallel` call. `ParallelExecutor::execute` uses scoped
+/// threads that join before return, so the borrows are safely bounded.
+pub struct LayeredStorage<'a, F> {
+    /// Immutable snapshot of in-batch committed state.
+    bundle: &'a BundleState,
+    /// Factory for spawning per-worker state providers.
+    factory: &'a F,
+}
+
+impl<'a, F> LayeredStorage<'a, F> {
+    /// Construct a new layered storage over the given bundle snapshot and
+    /// factory reference.
+    pub const fn new(bundle: &'a BundleState, factory: &'a F) -> Self {
+        Self { bundle, factory }
+    }
+}
+
+impl<'a, F> std::fmt::Debug for LayeredStorage<'a, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LayeredStorage")
+            .field("bundle_accounts", &self.bundle.state().len())
+            .field("bundle_contracts", &self.bundle.contracts.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, F> Storage for LayeredStorage<'a, F>
+where
+    F: StateProviderFactory + Send + Sync,
+{
+    type Error = ProviderError;
+
+    fn basic(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        // Layer 1: bundle overlay. A destroyed account reads as
+        // non-existent; a bundle account with Some(info) wins outright.
+        // For entries with None info (loaded-not-existing), we fall
+        // through — the DB-backed read yields the correct answer.
+        if let Some(bundle_acct) = self.bundle.account(&address) {
+            if bundle_acct.status.was_destroyed() {
+                return Ok(None);
+            }
+            if let Some(info) = &bundle_acct.info {
+                return Ok(Some(info.clone()));
+            }
+        }
+
+        // Layer 2: spawn a per-call state provider and read through.
+        let sp = self.factory.latest()?;
+        let Some(acct) = sp.basic_account(&address)? else {
+            return Ok(None);
+        };
+        let code_hash = acct.bytecode_hash.unwrap_or(KECCAK_EMPTY);
+        // Leave `code` unpopulated; revm's EVM loads bytecode lazily via
+        // `code_by_hash` when a CALL lands. Avoids an unconditional DB
+        // fetch on every account read.
+        Ok(Some(AccountInfo {
+            balance: acct.balance,
+            nonce: acct.nonce,
+            code_hash,
+            code: None,
+            account_id: None,
+        }))
+    }
+
+    fn code_by_hash(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        // Layer 1: bundle-local contracts (any CREATE/CREATE2 in the
+        // batch landed here).
+        if let Some(bc) = self.bundle.bytecode(&code_hash) {
+            return Ok(bc);
+        }
+
+        // Layer 2: DB. An unknown code hash at this point indicates a
+        // real bug (e.g. tx references a code hash we've never observed);
+        // surface as an error so the parallel phase aborts and the caller
+        // falls back to serial for this block.
+        let sp = self.factory.latest()?;
+        // reth wraps revm's `Bytecode` in its own newtype for codec
+        // reasons; unwrap via the public `.0` field.
+        sp.bytecode_by_hash(&code_hash)?
+            .map(|b| b.0)
+            .ok_or(ProviderError::StateForHashNotFound(code_hash))
+    }
+
+    fn storage(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+        // Layer 1: bundle overlay. Three cases:
+        //   1. Bundle has this slot → return its present_value.
+        //   2. Bundle knows the account's storage is fully rebuilt
+        //      (destroyed-then-reused): missing slot = 0.
+        //   3. Otherwise fall through — the pre-existing on-disk value
+        //      still applies.
+        if let Some(bundle_acct) = self.bundle.account(&address) {
+            if let Some(slot_entry) = bundle_acct.storage.get(&slot) {
+                return Ok(slot_entry.present_value);
+            }
+            if bundle_acct.status.is_storage_known() {
+                return Ok(U256::ZERO);
+            }
+        }
+
+        // Layer 2: DB.
+        let sp = self.factory.latest()?;
+        Ok(sp.storage(address, B256::from(slot))?.unwrap_or(U256::ZERO))
+    }
+
+    fn block_hash(&self, number: u64) -> Result<B256, Self::Error> {
+        // Block hashes are not layered by bundle state — always go to DB.
+        // EVM semantics: unknown blocks read as zero.
+        let sp = self.factory.latest()?;
+        Ok(sp.block_hash(number)?.unwrap_or(B256::ZERO))
+    }
+}
+
 
 /// VmBuilder over BSC's revm variant.
 ///

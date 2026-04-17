@@ -394,6 +394,252 @@ where
         Ok(true)
     }
 
+    /// Execute a block's user transactions in parallel via Block-STM.
+    ///
+    /// # Overview
+    ///
+    /// This is the parallel analog of `BlockExecutor::execute_block` for
+    /// blocks flagged by `ctx.parallel` (set from
+    /// `--bsc.parallel-execute`). System transactions and all pre/post
+    /// execution hooks stay serial; only the user-transaction body runs
+    /// under `parallel_evm::ParallelExecutor`.
+    ///
+    /// # Storage layer
+    ///
+    /// Parallel workers read through a [`LayeredStorage`](crate::node::evm::parallel::LayeredStorage):
+    /// an immutable `bundle_snapshot` overlay (required for pipeline-sync
+    /// batch correctness, where many blocks commit into a single
+    /// end-of-batch flush) over a Send+Sync `StateProviderFactory` that
+    /// spawns a fresh per-worker read transaction on each fallback read.
+    /// Each worker tx is owned by one thread and never shared — so we do
+    /// NOT require `DB: Sync` (MDBX transactions are not `Sync` by
+    /// design; that was the wall that killed the prior attempt, see
+    /// commit `01e69bb`).
+    ///
+    /// # Fallback rules
+    ///
+    /// Three serial-fallback triggers preserve correctness:
+    ///
+    /// 1. **Hertz patches.** Any tx whose hash matches a Hertz patch
+    ///    entry forces the entire block to run serial. Parallel workers
+    ///    would read pre-patch state and diverge from mainnet.
+    /// 2. **Parallel executor error.** Any `parallel_evm::Error` (budget
+    ///    exhausted, storage failure) aborts the parallel attempt and
+    ///    re-runs the whole block serially. Since nothing was committed
+    ///    during the parallel phase, fallback is clean.
+    /// 3. **Per-tx validation error.** If any result in the parallel
+    ///    output is `Err(_)`, re-run serially to let the existing serial
+    ///    path either validate the rejection or produce a proper error.
+    ///
+    /// Block-STM is deterministic (Aptos paper §4): on a happy-path
+    /// success, the state root must match the serial baseline byte-for-
+    /// byte. Any divergence is a bug; fallback is NOT a correctness
+    /// hedge — it's a targeted escape hatch for cases parallel mode
+    /// can't yet handle (patches, engine-level abort conditions).
+    ///
+    /// # Caller contract
+    ///
+    /// `bundle_snapshot` must reflect state up to the **parent** block's
+    /// end-of-batch bundle (NOT the current block's pre-execution
+    /// mutations, which the bundle doesn't see). In pipeline sync, the
+    /// caller (a future `BscParallelExecutionStage`) holds
+    /// `&mut State<DB>` at the pipeline level and can snapshot
+    /// `state.bundle_state` immediately before the per-block executor
+    /// is constructed.
+    ///
+    /// `factory` is typically the node's `ProviderFactory<N>` clone —
+    /// Send+Sync by construction. Per-worker `factory.latest()` calls
+    /// produce a fresh `StateProviderBox` per read, which keeps the non-
+    /// Sync MDBX tx contained to a single thread.
+    pub fn execute_block_parallel<F>(
+        mut self,
+        factory: &F,
+        bundle_snapshot: &revm::database::BundleState,
+        transactions: impl IntoIterator<Item = impl ExecutableTx<Self>>,
+    ) -> Result<BlockExecutionResult<R::Receipt>, BlockExecutionError>
+    where
+        F: reth_provider::StateProviderFactory + Send + Sync,
+        Spec: std::fmt::Debug + Send + Sync,
+        // The parallel executor produces revm's `HaltReason`; pin the EVM's
+        // own HaltReason to match so the results type-check when fed into
+        // `commit_transaction`. This holds for the production BSC path
+        // (BscEvmFactory::HaltReason = HaltReason); the bound only rules
+        // out exotic EVM configurations we don't ship.
+        EVM: Evm<HaltReason = revm::context::result::HaltReason>,
+    {
+        use super::parallel::{BscVmBuilder, LayeredStorage};
+        use alloy_consensus::transaction::SignerRecoverable;
+        use parallel_evm::{Config as ParallelConfig, ParallelExecutor};
+        use reth_primitives_traits::Recovered;
+
+        self.apply_pre_execution_changes()?;
+
+        let beneficiary = self.evm.block().beneficiary();
+        let block_env = self.evm.block().clone();
+        let block_number = block_env.number().to::<u64>();
+        let timestamp = block_env.timestamp().to::<u64>();
+        let hardfork = revm_spec_by_timestamp_and_block_number(
+            self.spec.clone(),
+            timestamp,
+            block_number,
+        );
+
+        // Per-tx slot so we can multi-pass (hertz scan, parallel split,
+        // serial-fallback). We hold the evm's tx_env for the serial path
+        // AND a freshly-built BscTxEnv for the parallel path, because
+        // `<EVM as Evm>::Tx` and `BscTxEnv` aren't the same type in the
+        // generic — `BscTxEnv: IntoTxEnv<<EVM as Evm>::Tx>` is one-way.
+        //
+        // `Recovered` is materialized by cloning the signed tx + signer
+        // out of whatever `ExecutableTx::Recovered` the caller gave us.
+        // The clone is cheap (TransactionSigned is Arc-backed) and makes
+        // the slot type concrete so we can feed it back into
+        // `execute_transaction` on the serial-fallback paths.
+        struct Slot<EvmTx> {
+            tx_env: EvmTx,
+            recovered: Recovered<TransactionSigned>,
+            tx_hash: alloy_primitives::B256,
+            tx_type: alloy_consensus::TxType,
+            blob_gas_used: u64,
+            is_system: bool,
+        }
+
+        let mut slots: Vec<Slot<<EVM as alloy_evm::Evm>::Tx>> = Vec::new();
+        for tx in transactions {
+            let (tx_env, recovered) = tx.into_parts();
+            let signed: &TransactionSigned = recovered.tx();
+            // `recovered` here is bound by `RecoveredTx<TransactionSigned>`,
+            // whose `signer()` returns `&Address`. Deref to a value (Copy).
+            let signer: Address = *recovered.signer();
+            let tx_hash = signed.trie_hash();
+            let tx_type = signed.tx_type();
+            let blob_gas_used = signed.blob_gas_used().unwrap_or_default();
+            let is_system = is_system_transaction(signed, signer, beneficiary);
+            let concrete_recovered = Recovered::new_unchecked(signed.clone(), signer);
+            slots.push(Slot {
+                tx_env,
+                recovered: concrete_recovered,
+                tx_hash,
+                tx_type,
+                blob_gas_used,
+                is_system,
+            });
+        }
+
+        // Trigger (1): Hertz-patched tx anywhere in the block → full
+        // serial fallback. System-tx hashes can't appear in the patch
+        // set but the scan is cheap and handles both cases uniformly.
+        let has_hertz = slots
+            .iter()
+            .any(|s| self.hertz_patch_manager.has_patch(&s.tx_hash));
+        if has_hertz {
+            tracing::debug!(
+                target: "bsc::executor::parallel",
+                block_number,
+                "hertz-patched tx detected, running block serially"
+            );
+            for s in slots {
+                self.execute_transaction((s.tx_env, s.recovered))?;
+            }
+            return self.apply_post_execution_changes();
+        }
+
+        // Split: build BscTxEnv list for user txs (the parallel input).
+        // System txs are buffered via the existing serial path during
+        // the commit loop below.
+        let user_tx_envs: Vec<BscTxEnv> = slots
+            .iter()
+            .filter(|s| !s.is_system)
+            .map(|s| {
+                BscTxEnv::from_recovered_tx(s.recovered.tx(), s.recovered.signer())
+            })
+            .collect();
+
+        // Pure-system-tx block → no parallel work; fall through serial.
+        // (In practice this never happens on BSC, but keeps the logic
+        // honest.)
+        if user_tx_envs.is_empty() {
+            for s in slots {
+                self.execute_transaction((s.tx_env, s.recovered))?;
+            }
+            return self.apply_post_execution_changes();
+        }
+
+        // Build the parallel executor + layered storage. `BscVmBuilder`
+        // is stateless (Clone) and the Config defaults to CPU-count
+        // workers. If we later need workload-specific tuning we'll plumb
+        // it through the CLI.
+        let vm_builder = BscVmBuilder::new(self.spec.clone());
+        let parallel = ParallelExecutor::new(ParallelConfig::default(), vm_builder);
+        let layered = LayeredStorage::new(bundle_snapshot, factory);
+
+        let output = match parallel.execute(
+            &layered,
+            block_env,
+            hardfork,
+            user_tx_envs,
+        ) {
+            Ok(o) => o,
+            Err(err) => {
+                // Trigger (2): parallel failure → serial fallback. No
+                // state has been committed yet, so the fallback loop
+                // starts from the same pre-exec state.
+                tracing::warn!(
+                    target: "bsc::executor::parallel",
+                    block_number,
+                    ?err,
+                    "parallel execution failed, falling back to serial"
+                );
+                for s in slots {
+                    self.execute_transaction((s.tx_env, s.recovered))?;
+                }
+                return self.apply_post_execution_changes();
+            }
+        };
+
+        // Trigger (3): per-tx Err means the parallel executor rejected
+        // a tx (validation or an unrecoverable storage fault). Re-run
+        // serially — the serial path either produces the same rejection
+        // with a proper error, or commits differently under Hertz-ish
+        // edge cases we haven't catalogued yet.
+        if output.results.iter().any(|r| r.is_err()) {
+            tracing::warn!(
+                target: "bsc::executor::parallel",
+                block_number,
+                "parallel output contained error results, falling back to serial"
+            );
+            for s in slots {
+                self.execute_transaction((s.tx_env, s.recovered))?;
+            }
+            return self.apply_post_execution_changes();
+        }
+
+        // Happy path: commit in original block order. User txs take
+        // their result from the parallel output (always `Ok(_)` by the
+        // check above); system txs are buffered exactly like the serial
+        // `execute_transaction_with_result_closure` does — the `finish`
+        // phase replays them via the system-contract path.
+        let mut parallel_iter = output.results.into_iter();
+        for s in slots {
+            if s.is_system {
+                self.system_txs.push(s.recovered.tx().clone());
+                continue;
+            }
+            let ras = parallel_iter
+                .next()
+                .expect("user-tx count mismatch between slots and parallel output")
+                .expect("error results already filtered above");
+            self.commit_transaction(BscTxResult {
+                result: ras,
+                tx_type: s.tx_type,
+                blob_gas_used: s.blob_gas_used,
+                tx_hash: s.tx_hash,
+            })?;
+        }
+
+        self.apply_post_execution_changes()
+    }
+
 }
 
 impl<'a, E, Spec, R> BlockExecutor for BscBlockExecutor<'a, E, Spec, R>
