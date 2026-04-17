@@ -67,6 +67,13 @@ already done by the caller).
   serial.
 - **System tx ordering.** System txs stay serial; validator rewards
   never parallelise.
+- **State<DB> cache pre-warm before commit.** `State<DB>::commit`
+  panics with "All accounts should be present inside cache" if a
+  touched account isn't in the cache. Serial tx reads populate it as
+  a side effect; parallel workers bypass it. The happy-path commit
+  loop in `BscBlockExecutor::execute_block_parallel` drives
+  `self.evm.db_mut().basic(addr)` for every touched account before
+  `commit_transaction` — don't remove this. See commit 8944352.
 
 ## Phase 3: E2E validation
 
