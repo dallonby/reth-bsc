@@ -1,8 +1,9 @@
 use reth_ethereum_primitives::Transaction;
 use alloy_consensus::{Header, BlockHeader};
 use alloy_primitives::{B256, BlockHash, BlockNumber};
+use parking_lot::Mutex;
 use schnellru::{ByLength, LruMap};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
 pub fn set_nonce(transaction: Transaction, nonce: u64) -> Transaction {
     match transaction {
@@ -71,10 +72,18 @@ impl HeaderCacheReader {
     pub fn insert_header_to_cache(&mut self, header: Header) {
         let block_number = header.number();
         let block_hash = header.hash_slow();
-        let header_clone_for_log = header.clone();
+        // Two LRUs, so one clone is unavoidable, but the previous
+        // implementation had a THIRD clone (`header_clone_for_log`)
+        // that only existed so the trace! call could reference the
+        // header by value. The trace log can borrow the LRU entry
+        // instead — formatting only pays when trace is enabled.
         self.blocknumber_to_header.insert(block_number, header.clone());
         self.blockhash_to_header.insert(block_hash, header);
-        tracing::trace!("Insert header to cache, block_number: {:?}, block_hash: {:?}, header: {:?}", block_number, block_hash, header_clone_for_log);
+        tracing::trace!(
+            block_number,
+            ?block_hash,
+            "Insert header to cache",
+        );
     }
 }
 
@@ -85,19 +94,19 @@ pub static HEADER_CACHE_READER: LazyLock<Mutex<HeaderCacheReader>> = LazyLock::n
 
 /// Get header by hash from the global header provider
 pub fn get_header_by_hash_from_cache(block_hash: &BlockHash) -> Option<Header> {
-    let header = HEADER_CACHE_READER.lock().unwrap().get_header_by_hash(block_hash);
+    let header = HEADER_CACHE_READER.lock().get_header_by_hash(block_hash);
     tracing::trace!("Succeed to fetch header by hash, is_none: {} for hash {}", header.is_none(), block_hash);
     header
 }
 
 /// Get canonical header by number from the global header provider
 pub fn get_cannonical_header_from_cache(number: BlockNumber) -> Option<Header> {
-    let header = HEADER_CACHE_READER.lock().unwrap().get_header_by_number(number);
+    let header = HEADER_CACHE_READER.lock().get_header_by_number(number);
     tracing::debug!("Succeed to fetch canonical header by number, is_none: {} for number {}", header.is_none(), number);
     header
 }
 
 /// Insert header to cache
 pub fn insert_header_to_cache(header: Header) {
-    HEADER_CACHE_READER.lock().unwrap().insert_header_to_cache(header);
+    HEADER_CACHE_READER.lock().insert_header_to_cache(header);
 }

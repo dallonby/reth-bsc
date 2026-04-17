@@ -252,7 +252,7 @@ where
             blob_params = self.chain_spec().blob_params_at_timestamp(header.timestamp);
         }
         let spec = revm_spec_by_timestamp_and_block_number(
-            self.chain_spec().clone(),
+            self.chain_spec().as_ref(),
             header.timestamp(),
             header.number(),
         );
@@ -322,7 +322,7 @@ where
     ) -> Result<EvmEnv<BscHardfork>, Self::Error> {
         // ensure we're not missing any timestamp based hardforks
         let spec_id = revm_spec_by_timestamp_and_block_number(
-            self.chain_spec().clone(),
+            self.chain_spec().as_ref(),
             attributes.timestamp,
             parent.number() + 1,
         );
@@ -527,14 +527,21 @@ where
 }
 
 /// Map the latest active hardfork at the given timestamp or block number to a [`BscHardfork`].
+///
+/// Takes the chain-spec by reference so hot-path callers (per-tx and
+/// per-system-tx in `execute_transaction_with_result_closure` and
+/// `transact_system_tx`) don't pay an `Arc::clone` (for the concrete
+/// `Arc<BscChainSpec>` production spec) or a full struct clone for
+/// generic test specs. The body only calls `&self` methods on the
+/// trait — by-value was never necessary.
 pub fn revm_spec_by_timestamp_and_block_number(
-    chain_spec: impl BscHardforks,
+    chain_spec: &impl BscHardforks,
     timestamp: u64,
     block_number: u64,
 ) -> BscHardfork {
     if chain_spec.is_mendel_active_at_timestamp(block_number, timestamp) {
         BscHardfork::Mendel
-    } else if BscHardforks::is_osaka_active_at_timestamp(&chain_spec, block_number, timestamp) {
+    } else if BscHardforks::is_osaka_active_at_timestamp(chain_spec, block_number, timestamp) {
         BscHardfork::Osaka
     } else if chain_spec.is_fermi_active_at_timestamp(block_number, timestamp) {
         BscHardfork::Fermi
@@ -550,7 +557,7 @@ pub fn revm_spec_by_timestamp_and_block_number(
         BscHardfork::HaberFix
     } else if chain_spec.is_haber_active_at_timestamp(block_number, timestamp) {
         BscHardfork::Haber
-    } else if BscHardforks::is_cancun_active_at_timestamp(&chain_spec, block_number, timestamp) {
+    } else if BscHardforks::is_cancun_active_at_timestamp(chain_spec, block_number, timestamp) {
         BscHardfork::Cancun
     } else if chain_spec.is_feynman_fix_active_at_timestamp(block_number, timestamp) {
         BscHardfork::FeynmanFix

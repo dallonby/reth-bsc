@@ -70,7 +70,6 @@ where
 
         let parent_header = crate::node::evm::util::HEADER_CACHE_READER
             .lock()
-            .unwrap()
             .get_header_by_hash(&header.parent_hash)
             .ok_or(BlockExecutionError::msg("Failed to get parent header from global header reader"))?;
         self.inner_ctx.parent_header = Some(parent_header.clone());
@@ -328,7 +327,6 @@ where
                 }
                 ancestor = crate::node::evm::util::HEADER_CACHE_READER
                     .lock()
-                    .unwrap()
                     .get_header_by_hash(&ancestor.parent_hash())
                     .ok_or_else(|| BscBlockExecutionError::UnknownHeader { block_hash: ancestor.parent_hash() })?;
                 tracing::debug!("ancestor: {:?}", ancestor);
@@ -523,7 +521,6 @@ where
         if snap.vote_data.source_hash == B256::ZERO && snap.vote_data.target_hash == B256::ZERO {
             return HEADER_CACHE_READER
                 .lock()
-                .unwrap()
                 .get_header_by_number(0)
                 .ok_or_else(|| {
                     BscBlockExecutionError::UnknownHeader { block_hash: B256::ZERO }.into()
@@ -532,7 +529,6 @@ where
 
         HEADER_CACHE_READER
             .lock()
-            .unwrap()
             .get_header_by_hash(&snap.vote_data.target_hash)
             .ok_or_else(|| {
                 BscBlockExecutionError::UnknownHeader { block_hash: snap.vote_data.target_hash }.into()
@@ -546,7 +542,6 @@ where
     ) -> Result<(), BlockExecutionError> {
         let parent_header = crate::node::evm::util::HEADER_CACHE_READER
             .lock()
-            .unwrap()
             .get_header_by_hash(&self.ctx.base.parent_hash)
             .ok_or(BlockExecutionError::msg("Failed to get parent header from global header reader"))?;
         self.inner_ctx.parent_header = Some(parent_header.clone());

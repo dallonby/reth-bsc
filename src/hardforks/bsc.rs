@@ -291,7 +291,7 @@ mod tests {
         // Block 23846000: Should be Moran (before Gibbs activation)
         assert_eq!(
             crate::node::evm::config::revm_spec_by_timestamp_and_block_number(
-                mainnet_spec.clone(),
+                &mainnet_spec,
                 1700000000, // Some timestamp
                 23846000
             ),
@@ -301,7 +301,7 @@ mod tests {
         // Block 23846001: Should be Gibbs (Gibbs activation block)
         assert_eq!(
             crate::node::evm::config::revm_spec_by_timestamp_and_block_number(
-                mainnet_spec.clone(),
+                &mainnet_spec,
                 1700000000, // Some timestamp
                 23846001
             ),
@@ -311,7 +311,7 @@ mod tests {
         // Block 22107422: Should be Nano (before Moran activation)
         assert_eq!(
             crate::node::evm::config::revm_spec_by_timestamp_and_block_number(
-                mainnet_spec.clone(),
+                &mainnet_spec,
                 1700000000, // Some timestamp
                 22107422
             ),
@@ -321,7 +321,7 @@ mod tests {
         // Block 22107423: Should be Moran (Moran activation block)
         assert_eq!(
             crate::node::evm::config::revm_spec_by_timestamp_and_block_number(
-                mainnet_spec.clone(),
+                &mainnet_spec,
                 1700000000, // Some timestamp
                 22107423
             ),
@@ -335,7 +335,7 @@ mod tests {
         // Block 23603939: Should be Nano (before Moran activation)
         assert_eq!(
             crate::node::evm::config::revm_spec_by_timestamp_and_block_number(
-                testnet_spec.clone(),
+                &testnet_spec,
                 1700000000, // Some timestamp
                 23603939
             ),
@@ -345,7 +345,7 @@ mod tests {
         // Block 23603940: Should be Moran (Moran activation block)
         assert_eq!(
             crate::node::evm::config::revm_spec_by_timestamp_and_block_number(
-                testnet_spec.clone(),
+                &testnet_spec,
                 1700000000, // Some timestamp
                 23603940
             ),
@@ -355,7 +355,7 @@ mod tests {
         // Block 23482427: Should be Gibbs (before Nano activation)
         assert_eq!(
             crate::node::evm::config::revm_spec_by_timestamp_and_block_number(
-                testnet_spec.clone(),
+                &testnet_spec,
                 1700000000, // Some timestamp
                 23482427
             ),
@@ -365,7 +365,7 @@ mod tests {
         // Block 23482428: Should be Nano (Nano activation block)
         assert_eq!(
             crate::node::evm::config::revm_spec_by_timestamp_and_block_number(
-                testnet_spec.clone(),
+                &testnet_spec,
                 1700000000, // Some timestamp
                 23482428
             ),

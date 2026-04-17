@@ -493,7 +493,7 @@ mod nodeids_call_tests {
 
         let (to_rm, data_rm) = encode_remove_node_ids_call(vec![id2]);
         assert_eq!(to_rm, STAKE_HUB_CONTRACT);
-        let func_rm = abi.function("removeNodeIDs").unwrap().first().unwrap();
+        let func_rm = STAKE_HUB_ABI_PARSED.function("removeNodeIDs").unwrap().first().unwrap();
         let out_rm = func_rm.abi_decode_input(&data_rm[4..]).unwrap();
         let arr_rm = out_rm[0].as_array().unwrap();
         let got_rm = arr_rm[0].as_fixed_bytes().unwrap().0;

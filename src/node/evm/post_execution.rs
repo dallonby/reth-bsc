@@ -391,7 +391,7 @@ where
 
         let block_number = self.evm.block().number().to::<u64>();
         let timestamp = self.evm.block().timestamp().to::<u64>();
-        let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
+        let spec = revm_spec_by_timestamp_and_block_number(&self.spec, timestamp, block_number);
         let tx_hash = signed_tx.as_ref().map(|tx| tx.tx_hash()).copied();
 
         precompiles::push_precompile_trace_context(precompiles::PrecompileTraceContext::from_parts(

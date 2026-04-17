@@ -157,7 +157,7 @@ where
         
         trace!("Succeed to new block executor, header: {:?}", ctx.header);
         if let Some(ref header) = ctx.header {
-            crate::node::evm::util::HEADER_CACHE_READER.lock().unwrap().insert_header_to_cache(header.clone());
+            crate::node::evm::util::HEADER_CACHE_READER.lock().insert_header_to_cache(header.clone());
         } else if !ctx.is_miner { // miner has no current header.
             warn!("No header found in the context, block_number: {:?}", evm.block().number().to::<u64>());
         }
@@ -491,7 +491,7 @@ where
         let tx_hash = tx.tx().trie_hash();
         let block_number = self.evm.block().number().to::<u64>();
         let timestamp = self.evm.block().timestamp().to::<u64>();
-        let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
+        let spec = revm_spec_by_timestamp_and_block_number(&self.spec, timestamp, block_number);
         let (to, selector, input_len) = {
             let to = tx.tx().to();
             let input = tx.tx().input();
@@ -607,7 +607,7 @@ where
         let tx_hash = signed_tx.trie_hash();
         let block_number = self.evm.block().number().to::<u64>();
         let timestamp = self.evm.block().timestamp().to::<u64>();
-        let spec = revm_spec_by_timestamp_and_block_number(self.spec.clone(), timestamp, block_number);
+        let spec = revm_spec_by_timestamp_and_block_number(&self.spec, timestamp, block_number);
         let (to, selector, input_len) = {
             let to = signed_tx.to();
             let input = signed_tx.input();

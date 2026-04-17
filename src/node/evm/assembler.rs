@@ -179,7 +179,6 @@ where
         {   // finalize_new_header
             let parent_header = crate::node::evm::util::HEADER_CACHE_READER
                 .lock()
-                .unwrap()
                 .get_header_by_hash(&header.parent_hash)
                 .ok_or(BlockExecutionError::msg("Failed to get header from global header reader"))?;
             let parent_snap = snapshot_provider
@@ -309,7 +308,6 @@ where
         {   // finalize_new_header
             let parent_header = crate::node::evm::util::HEADER_CACHE_READER
                 .lock()
-                .unwrap()
                 .get_header_by_hash(&header.parent_hash)
                 .ok_or(BlockExecutionError::msg("Failed to get header from global header reader"))?;
             let parent_snap = snapshot_provider
