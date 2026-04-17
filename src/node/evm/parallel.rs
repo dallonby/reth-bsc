@@ -61,34 +61,62 @@
 //!    → bundle → underlying-DB in order) — which is exactly the access
 //!    our bounds don't permit.
 //!
-//!    Three genuinely viable paths:
+//!    ## The deeper wall (investigated further 2026-04-17)
 //!
-//!    - **(a) Fork reth to loosen the trait bound.** Add an optional
-//!      `DatabaseRef + Send + Sync` bound on `ConfigureEvm::create
-//!      _executor`, or expose a parallel-capable sub-trait alongside.
-//!      Clean architecturally, but moves reth-bsc to a reth fork —
-//!      future reth upstreaming becomes maintenance-expensive. Paradigm
-//!      may accept such an upstream if framed as a block-STM enabler.
+//!    Attempted minimal reth fork: tightening
+//!    `BasicBlockExecutor::Executor<DB>` to require `DB: DatabaseRef +
+//!    Send + Sync` with std::error::Error bounds on `DB::Error`. reth-
+//!    evm compiles clean with that local change (the narrow sync-path
+//!    tightening doesn't affect block-builder / payload paths that go
+//!    through `CachedReadsDbMut`). But the workspace check surfaces
+//!    propagation to `StateProviderBox = Box<dyn StateProvider + Send
+//!    + 'static>` — no `Sync`. ef-tests and exex backfill construct
+//!    `StateProviderDatabase(Box<dyn StateProvider + Send>)` which
+//!    doesn't satisfy the new `Sync` requirement.
 //!
-//!    - **(b) Custom execution stage.** Replace reth's default
-//!      `ExecutionStage` in our pipeline with a `BscParallelExecution
-//!      Stage` that holds its own concrete DB type and calls a new
-//!      inherent `BscEvmConfig::create_parallel_executor`. Invasive at
-//!      the node-launch layer but keeps parallel logic in our crate.
-//!      Does commit per-block within the stage to avoid batch-bundle
-//!      staleness.
+//!    Adding `Sync` to the typealias cascades: `StateProvider` itself
+//!    lacks `Sync` supertrait, `DatabaseProvider<TX>` only `Sync` if
+//!    `TX: Sync`, and `pub trait DbTx: Debug + Send` is fundamentally
+//!    not `Sync` — **MDBX transactions can be moved between threads
+//!    but not concurrently shared**. This is a deliberate reth/MDBX
+//!    design property, not a trait-declaration oversight. Reth's own
+//!    parallel-state answer is `ConsistentDbView<Factory>`: a
+//!    Send+Sync factory that hands each worker its own fresh tx — but
+//!    that model doesn't compose with `parallel-evm`'s shared-
+//!    `&Storage` interface.
 //!
-//!    - **(c) Engine-mode-only parallel.** Restrict parallel execution
-//!      to the blockchain-tree / engine path (which processes one
-//!      block at a time against a fully-committed parent, so `state_by
-//!      _block_hash(parent_hash)` is correct). Miss parallel during
-//!      initial pipeline sync, gain it at chain tip — which is where
-//!      BSC spends 99% of its operational life anyway. The speculative
-//!      prefetcher already handles initial sync. Least invasive but
-//!      architecturally bifurcated.
+//!    ## Options left (none cheap)
 //!
-//!    Recommendation: (c) first (smallest win-per-risk), (a) later if
-//!    Paradigm-upstream-friendly wording lands.
+//!    - **(a) Batch-execution parallel across blocks.** Use
+//!      `ConsistentDbView` directly, each worker processes an entire
+//!      independent block. Limited applicability — most real BSC
+//!      blocks are dependent on their immediate predecessor's state —
+//!      and the existing speculative-prefetcher already covers the
+//!      "warm multiple blocks on separate threads" axis.
+//!
+//!    - **(b) Bundle-overlay storage + ConsistentDbView.** Layered
+//!      read source: capture `self.evm.db().bundle_state` immutably at
+//!      execute_block entry (so batch-correctness is preserved), fall
+//!      through to a `ConsistentDbView`-spawned per-worker tx for
+//!      committed state. Requires either (i) upstream RFC adding a
+//!      bundle-state accessor to the `StateDB` trait, or (ii)
+//!      refactoring `BscBlockExecutor` to hold `&mut State<DB>`
+//!      concretely instead of a generic `E::DB` — multi-file surgery
+//!      that trades generic flexibility for concrete access.
+//!
+//!    - **(c) Pause parallel activation, keep the scaffold.** RefStorage
+//!      + BscVmBuilder generic + execute_block runtime branch + CLI
+//!      flag are all genuinely useful infrastructure for a future
+//!      paradigm-upstream RFC or BscBlockExecutor refactor. Redirect
+//!      this session's remaining energy to other reth-bsc priorities.
+//!
+//!    **Call:** (c). The combination of reth's trait-bound architecture
+//!    and MDBX's non-Sync tx design means **no single small change
+//!    unlocks in-block parallel** — (a) is narrow-use, (b) is a
+//!    refactor-sized project. The scaffold stays in place for the next
+//!    focused session to pick up with either an upstream paradigm PR
+//!    or an in-crate BscBlockExecutor concrete-type refactor. Flag-on
+//!    is byte-identical to flag-off today; zero runtime risk.
 //! 2. In the parallel branch, collect txs into `Vec<(BscTxEnv,
 //!    Recovered<TransactionSigned>)>`. `BscTxEnv::from_recovered_tx` is
 //!    already available; the Recovered form is rebuilt from the
