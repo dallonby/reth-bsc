@@ -50,33 +50,45 @@
 //!    `BlockExecutor::execute_block`, because we have no way to assert
 //!    `E::DB: DatabaseRef` at that call site.
 //!
-//!    Two viable strategies for the next session:
+//!    The bigger insight follow-up investigation surfaced: reth's
+//!    pipeline execution stage **batches** blocks — `State<DB>.bundle
+//!    _state` accumulates transitions across many blocks before the
+//!    single end-of-batch commit. So an "external state provider at
+//!    parent's block number" is NOT a valid parallel-read source
+//!    during pipeline sync: it misses every in-batch committed block's
+//!    changes. The only correct read source for parallel is the
+//!    executor's own `&State<DB>` (whose DatabaseRef impl reads cache
+//!    → bundle → underlying-DB in order) — which is exactly the access
+//!    our bounds don't permit.
 //!
-//!    - **(a) Pipeline-level parallel pre-execution.** Hook in at a
-//!      higher layer that already holds a state-provider handle (which
-//!      *is* `DatabaseRef + Send + Sync` by construction). Before
-//!      `execute_block` is invoked by the pipeline, run user txs in
-//!      parallel against a forked snapshot of the parent state, stash
-//!      the per-tx `ResultAndState`s in a new shared-ctx field, and
-//!      have `BscBlockExecutor::execute_transaction_with_result_closure`
-//!      commit the precomputed result instead of calling
-//!      `self.evm.transact(...)`. Correctness caveat: if
-//!      `apply_pre_execution_changes` writes (Feynman contract
-//!      upgrades, Prague blockhash storage), the parent snapshot is
-//!      stale — either apply those writes to the snapshot first or
-//!      force serial for those blocks.
+//!    Three genuinely viable paths:
 //!
-//!    - **(b) Parallel-specific wrapper executor.** Add a
-//!      `create_parallel_executor` method on `BscEvmConfig` (not on the
-//!      `ConfigureEvm` trait — a fresh inherent method) returning a
-//!      `BscParallelBlockExecutor<'a, DB, Spec, R>` wrapper with the
-//!      stricter `DB: DatabaseRef + Send + Sync` bound. Pipeline code
-//!      that knows the concrete DB picks between the two. Intrusive at
-//!      the launch site but keeps the parallel logic co-located in this
-//!      crate.
+//!    - **(a) Fork reth to loosen the trait bound.** Add an optional
+//!      `DatabaseRef + Send + Sync` bound on `ConfigureEvm::create
+//!      _executor`, or expose a parallel-capable sub-trait alongside.
+//!      Clean architecturally, but moves reth-bsc to a reth fork —
+//!      future reth upstreaming becomes maintenance-expensive. Paradigm
+//!      may accept such an upstream if framed as a block-STM enabler.
 //!
-//!    (a) is architecturally cleaner and less invasive; (b) is more
-//!    local and easier to revert.
+//!    - **(b) Custom execution stage.** Replace reth's default
+//!      `ExecutionStage` in our pipeline with a `BscParallelExecution
+//!      Stage` that holds its own concrete DB type and calls a new
+//!      inherent `BscEvmConfig::create_parallel_executor`. Invasive at
+//!      the node-launch layer but keeps parallel logic in our crate.
+//!      Does commit per-block within the stage to avoid batch-bundle
+//!      staleness.
+//!
+//!    - **(c) Engine-mode-only parallel.** Restrict parallel execution
+//!      to the blockchain-tree / engine path (which processes one
+//!      block at a time against a fully-committed parent, so `state_by
+//!      _block_hash(parent_hash)` is correct). Miss parallel during
+//!      initial pipeline sync, gain it at chain tip — which is where
+//!      BSC spends 99% of its operational life anyway. The speculative
+//!      prefetcher already handles initial sync. Least invasive but
+//!      architecturally bifurcated.
+//!
+//!    Recommendation: (c) first (smallest win-per-risk), (a) later if
+//!    Paradigm-upstream-friendly wording lands.
 //! 2. In the parallel branch, collect txs into `Vec<(BscTxEnv,
 //!    Recovered<TransactionSigned>)>`. `BscTxEnv::from_recovered_tx` is
 //!    already available; the Recovered form is rebuilt from the
