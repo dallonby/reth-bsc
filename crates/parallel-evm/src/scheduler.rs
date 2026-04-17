@@ -201,11 +201,11 @@ impl Scheduler {
     pub fn finish_execution(&self, version: Version, wrote_new_location: bool) {
         let dependents = self.status.finish_execution(version.tx_idx, version.incarnation);
 
-        // Dependents need to re-execute. Wake them (flip to Ready), and
-        // push execution_idx down to the earliest of them so the scheduler
-        // picks them up.
+        // Dependents need to re-execute. They were transitioned to
+        // `Aborting(inc)` at park time (see `abort_in_flight_execution`);
+        // pushing `execution_idx` down lets `next_task` re-claim them via
+        // `begin_execution`, which bumps the incarnation naturally.
         if !dependents.is_empty() {
-            self.status.wake(&dependents);
             let min_dep = *dependents.iter().min().expect("non-empty");
             self.decrease_atomic(&self.execution_idx, min_dep);
         }
@@ -224,6 +224,34 @@ impl Scheduler {
         let _ = wrote_new_location;
 
         // This task has been fully processed; let go of the in-flight slot.
+        self.num_active_tasks.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Abort an in-flight execution because a read hit a `Blocked` marker.
+    ///
+    /// `blocking_tx_idx` is the tx whose write is currently an `Estimate`
+    /// — we park this tx on that one so the scheduler re-picks us when the
+    /// blocker completes its next incarnation.
+    ///
+    /// On failure to park (blocker already finished), lower `execution_idx`
+    /// to this tx's index so the scheduler re-picks us immediately.
+    pub fn abort_in_flight_execution(&self, version: Version, blocking_tx_idx: TxIdx) {
+        let parked = self
+            .status
+            .add_dependent(blocking_tx_idx, version.tx_idx);
+
+        // Transition phase: Executing(inc) -> Aborting(inc). Next
+        // `begin_execution` claim picks up as `Executing(inc + 1)`.
+        self.status
+            .abort_executing(version.tx_idx, version.incarnation);
+
+        if !parked {
+            // Blocker already finished. Make sure we're re-claimed ASAP.
+            self.decrease_atomic(&self.execution_idx, version.tx_idx);
+        }
+        // When `parked` is true, the blocker's finish_execution will drain
+        // its dependents and lower `execution_idx` for us.
+
         self.num_active_tasks.fetch_sub(1, Ordering::SeqCst);
     }
 

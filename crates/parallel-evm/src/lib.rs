@@ -33,16 +33,25 @@
 //! `ParallelExecutor` land in subsequent steps. The API below will grow; no
 //! stable promises until `0.1.0` ships.
 
+pub mod db_wrapper;
 pub mod error;
+pub mod executor;
 pub mod mv_memory;
 pub mod read_set;
 pub mod scheduler;
 pub mod status;
+pub mod storage;
+pub mod vm;
+mod worker;
 
+pub use db_wrapper::{DbError, DbWrapper};
 pub use error::{Error, Result};
+pub use executor::{Config, Output, ParallelExecutor, Stats, TxResult};
 pub use mv_memory::{
     Incarnation, MemoryEntry, MemoryLocation, MemoryValue, MvMemory, ReadOutcome, TxIdx, Version,
 };
 pub use read_set::{ReadLog, ReadLogBuilder, ReadOrigin, ReadSetStore};
 pub use scheduler::{Scheduler, Task};
 pub use status::{Phase, StatusVector, TxState};
+pub use storage::Storage;
+pub use vm::{TransactOutcome, TransactResult, VmBuilder};

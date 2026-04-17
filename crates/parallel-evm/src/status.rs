@@ -193,6 +193,23 @@ impl StatusVector {
         }
     }
 
+    /// Transition `Executing(inc)` -> `Aborting(inc)` for mid-execution
+    /// aborts — specifically, the case where a worker hit a `Blocked` read
+    /// in MvMemory and can't complete its incarnation. Re-execution picks
+    /// up at `inc + 1` via the normal [`begin_execution`] path.
+    ///
+    /// Returns `true` iff the transition happened. Failure cases mirror
+    /// [`try_abort`]: stale attempts to abort a phase that's moved on.
+    pub fn abort_executing(&self, tx_idx: usize, inc: Incarnation) -> bool {
+        let mut state = self.txs[tx_idx].lock();
+        if state.phase == Phase::Executing(inc) {
+            state.phase = Phase::Aborting(inc);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Record that `dependent_tx_idx` is parked on `blocker_tx_idx`.
     ///
     /// Atomic with respect to `finish_execution`: if the blocker has already
@@ -210,38 +227,19 @@ impl StatusVector {
         }
     }
 
-    /// Flip every dependent back to `ReadyToExecute` so the scheduler
-    /// re-picks them. Used by the scheduler after it drains a finished tx's
-    /// dependents via [`finish_execution`].
-    ///
-    /// Dependents that were already beyond `ReadyToExecute` (e.g. they got
-    /// unparked by a different blocker in the meantime) are left alone.
-    pub fn wake(&self, dependents: &[usize]) {
-        for &tx_idx in dependents {
-            let mut state = self.txs[tx_idx].lock();
-            // Only wake a tx that's still waiting. If it's already
-            // Executing/Executed/Aborting someone else is driving it.
-            if matches!(state.phase, Phase::ReadyToExecute) {
-                // Nothing to do — already wake-able.
-                continue;
-            }
-            // This path is reached when the dependent hadn't actually
-            // started executing yet — `add_dependent` is called from inside
-            // an executing tx's read path, so by definition the dependent
-            // is also Executing at that moment. We flip it back so the
-            // execution loop re-claims it fresh.
-            //
-            // A subtle point: if the dependent is mid-execution when we
-            // wake, our flip to ReadyToExecute invalidates its current
-            // incarnation. The dependent worker's finish_execution will no
-            // longer match phase == Executing(inc), so it becomes a no-op
-            // and its write-set landing in MvMemory is fine (it was
-            // tentative and will be re-executed). Equivalent semantics to
-            // aborting it.
-            state.phase = Phase::ReadyToExecute;
-            state.dependents.clear();
-        }
-    }
+    // Deliberately no `wake()` method here. Dependents drained by
+    // [`finish_execution`] already have their phase set correctly by
+    // whoever parked them:
+    //
+    // - The worker that hit a `Blocked` read called
+    //   [`abort_executing`], so the dependent sits in `Aborting(inc)`.
+    // - When the scheduler's `finish_execution` pushes `execution_idx`
+    //   down to the min dependent, `next_task` re-picks the dependent and
+    //   `begin_execution` transitions it to `Executing(inc + 1)`.
+    //
+    // An earlier iteration flipped dependents to `ReadyToExecute`, which
+    // lost the incarnation counter and caused `MvMemory` to accumulate
+    // stale writes. Never add that back without a very good reason.
 }
 
 #[cfg(test)]
@@ -325,24 +323,28 @@ mod tests {
     }
 
     #[test]
-    fn wake_returns_dependents_to_ready() {
-        let s = StatusVector::new(3);
-        // tx 2 claims execution, will then park on tx 1.
-        s.begin_execution(2);
-        s.begin_execution(1);
-        assert!(s.add_dependent(1, 2));
-        // tx 2 is currently Executing(0). wake() should flip it back.
-        s.wake(&[2]);
-        assert_eq!(s.phase(2), Phase::ReadyToExecute);
+    fn abort_executing_transitions_phase_but_preserves_inc() {
+        let s = StatusVector::new(1);
+        s.begin_execution(0);
+        assert_eq!(s.phase(0), Phase::Executing(0));
+        assert!(s.abort_executing(0, 0));
+        assert_eq!(s.phase(0), Phase::Aborting(0));
+        // A second abort on the same incarnation is a no-op.
+        assert!(!s.abort_executing(0, 0));
+        // begin_execution now bumps to inc 1.
+        assert_eq!(s.begin_execution(0), Some(1));
     }
 
     #[test]
-    fn wake_skips_already_ready_dependents() {
-        let s = StatusVector::new(2);
-        // tx 0 is ReadyToExecute — wake() should leave it alone and not
-        // touch the dependents list.
-        s.wake(&[0]);
-        assert_eq!(s.phase(0), Phase::ReadyToExecute);
+    fn abort_executing_rejects_non_executing_phases() {
+        let s = StatusVector::new(1);
+        // ReadyToExecute
+        assert!(!s.abort_executing(0, 0));
+        // After successful execute + try_abort → Aborting
+        s.begin_execution(0);
+        s.finish_execution(0, 0);
+        s.try_abort(0, 0);
+        assert!(!s.abort_executing(0, 0));
     }
 
     #[test]
