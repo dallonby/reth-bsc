@@ -1070,3 +1070,39 @@ where
         self.apply_post_execution_changes()
     }
 }
+
+#[cfg(test)]
+mod parallel_callable_tests {
+    //! Compile-only check that `execute_block_parallel` is callable with the
+    //! concrete production-shaped types (`BscEvm<&'a mut State<DB>, I>`,
+    //! `Arc<BscChainSpec>`, `RethReceiptBuilder`). If this module compiles,
+    //! the method-level where-clause bounds align with what
+    //! `BscEvmConfig::create_executor` would actually hand to us during a
+    //! real sync.
+
+    use super::*;
+    use crate::{chainspec::BscChainSpec, evm::api::BscEvm};
+    use reth_evm_ethereum::RethReceiptBuilder;
+    use revm::inspector::NoOpInspector;
+
+    #[allow(dead_code)]
+    fn _parallel_is_callable_on_production_types<'a, DB>(
+        exec: BscBlockExecutor<
+            'a,
+            BscEvm<&'a mut State<DB>, NoOpInspector>,
+            std::sync::Arc<BscChainSpec>,
+            RethReceiptBuilder,
+        >,
+        txs: Vec<reth_primitives_traits::Recovered<TransactionSigned>>,
+    ) -> Result<
+        BlockExecutionResult<<RethReceiptBuilder as ReceiptBuilder>::Receipt>,
+        BlockExecutionError,
+    >
+    where
+        DB: _RevmDatabase + DatabaseRef + Send + Sync + std::fmt::Debug + 'a,
+        <DB as _RevmDatabase>::Error: std::error::Error + Send + Sync + 'static,
+        <DB as DatabaseRef>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        exec.execute_block_parallel(txs.iter())
+    }
+}
