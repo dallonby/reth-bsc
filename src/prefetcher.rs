@@ -362,68 +362,6 @@ pub fn init(
     );
 }
 
-/// Pin the current thread to the same CCD as the main execution thread
-/// (CCD0: logical cores 0-7 and SMT siblings 16-23 on Zen 5 16-core).
-///
-/// Why same CCD: speculative workers are I/O bound (each uses ~4% CPU).
-/// They're not competing with the main thread for compute — they're
-/// prefetching state pages. When workers run on the SAME CCD as the main
-/// thread, their reads populate the shared 32 MB L3, so main thread gets
-/// L3 hits on subsequent accesses instead of DRAM-latency fetches. This
-/// is the whole point of a prefetcher: warm the cache level the consumer
-/// uses.
-///
-/// Putting workers on CCD1 (the previous pin) meant their reads warmed a
-/// DIFFERENT L3 that main thread couldn't see, defeating most of the
-/// benefit.
-#[cfg(target_os = "linux")]
-fn pin_worker_to_ccd0(worker_id: usize) {
-    let num_cpus = num_cpus_online();
-    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    unsafe { libc::CPU_ZERO(&mut set) };
-    let mut count = 0;
-    for cpu in 0..num_cpus {
-        // CCD0 physical range (0..=7) + CCD0 SMT siblings (16..=23) on
-        // Zen 5 16-core. On other topologies this falls back to whatever
-        // cores exist in that range.
-        if (0..8).contains(&cpu) || (16..24).contains(&cpu) {
-            if cpu < num_cpus {
-                unsafe { libc::CPU_SET(cpu, &mut set) };
-                count += 1;
-            }
-        }
-    }
-    if count == 0 {
-        tracing::warn!(
-            target: "bsc::prefetcher",
-            worker_id,
-            num_cpus,
-            "no CCD0 cores available; leaving worker unpinned"
-        );
-        return;
-    }
-    let rc = unsafe {
-        libc::sched_setaffinity(
-            0, // current thread
-            std::mem::size_of::<libc::cpu_set_t>(),
-            &set,
-        )
-    };
-    if rc != 0 {
-        let err = std::io::Error::last_os_error();
-        tracing::warn!(
-            target: "bsc::prefetcher",
-            worker_id,
-            error = %err,
-            "sched_setaffinity failed"
-        );
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn num_cpus_online() -> usize {
-    unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) as usize }
-}
 
 fn worker_loop(worker_id: usize, state: Arc<PrefetchState>, exec: SpeculativeExecFn) {
     // Mark this OS thread as a speculative worker so every code path inside
@@ -431,18 +369,15 @@ fn worker_loop(worker_id: usize, state: Arc<PrefetchState>, exec: SpeculativeExe
     // snapshot provider, progress publishing, etc.).
     mark_thread_as_speculative_worker();
 
-    // Pin to CCD0 (same CCD as the main execution thread). Workers are
-    // I/O bound and using very little CPU, so they don't meaningfully
-    // compete with main thread for compute. They DO populate CCD0's
-    // shared 32 MB L3 when they read state pages, which is exactly what
-    // we want the main thread to find hot on its next access.
-    //
-    // (Earlier iteration pinned workers to CCD1 for "isolation". That was
-    // backwards: it gave workers their own separate L3 that main thread
-    // couldn't see, so the prefetcher warmed the wrong cache.)
-    #[cfg(target_os = "linux")]
-    pin_worker_to_ccd0(worker_id);
-
+    // NOTE: we deliberately DO NOT pin spec workers to a specific CCD. An
+    // earlier iteration pinned every worker to CCD0 on the theory that
+    // worker reads would warm the same 32 MB L3 the main thread uses
+    // (CCDs don't share L3 on Zen). The practical problem: with the
+    // default worker counts the CCD was oversubscribed (16 spec + 16
+    // warm = 32 threads on 16 logical cores) and the other CCD sat
+    // idle. Letting the kernel scheduler place workers across both CCDs
+    // gives better wall-clock throughput, even if we forfeit some L3-
+    // sharing benefit. Warm workers are also unpinned.
     tracing::debug!(target: "bsc::prefetcher", worker_id, "worker started");
 
     loop {
